@@ -63,44 +63,55 @@ fn write_marker() {
     }
 }
 
-/// Ensure graphifyy is importable, auto-installing it once (cached via a marker file so we don't
-/// probe/install on every run). Returns false if Python/pip can't provide it.
+/// One-time bootstrap (cached via a marker so it runs once): make graphifyy importable
+/// (auto-`pip install`), then register the graphify skill with the agent (`graphify install`) so the
+/// assistant knows to read the map. Returns false if Python/pip can't provide graphify.
 fn ensure(py: &str, verbose: bool) -> bool {
     if marker().map(|m| m.exists()).unwrap_or(false) {
         return true;
     }
-    if run_quiet(py, &["-c", "import graphify"]) {
-        write_marker();
-        return true;
+    let mut importable = run_quiet(py, &["-c", "import graphify"]);
+    if !importable {
+        if verbose {
+            eprintln!("tokex: installing graphifyy (one-time) …");
+        }
+        importable = run_quiet(py, &["-m", "pip", "install", "--quiet", "graphifyy"])
+            && run_quiet(py, &["-c", "import graphify"]);
     }
+    if !importable {
+        return false;
+    }
+    // Register the graphify skill with the agent (one-time). Best-effort; inherits this process's
+    // stdio (visible under `tokex graph`, silent when the bootstrap runs detached).
     if verbose {
-        eprintln!("tokex: installing graphifyy (one-time) …");
+        eprintln!("tokex: registering graphify skill with your agent …");
     }
-    if run_quiet(py, &["-m", "pip", "install", "--quiet", "graphifyy"])
-        && run_quiet(py, &["-c", "import graphify"])
-    {
-        write_marker();
-        true
-    } else {
-        false
-    }
+    let _ = Command::new(py).args(["-m", "graphify", "install"]).status();
+    write_marker();
+    true
 }
 
-/// Background, best-effort refresh after a code-changing run. Fire-and-forget — never blocks the
-/// run's result (beyond the one-time install) and never fails it.
+/// Best-effort refresh after a code-changing run — never blocks the run.
+/// If already set up, fire a cheap incremental `graphify update .` in the background. If not, run
+/// the one-time bootstrap detached (via `tokex graph`) so the install/skill-register never stalls
+/// the command. ponytail: no lock — a rare double-bootstrap is idempotent.
 pub fn auto_update(command: &str) {
     if !touches_code(command) {
         return;
     }
-    let py = py();
-    if !ensure(py, true) {
-        return;
+    if marker().map(|m| m.exists()).unwrap_or(false) {
+        let _ = Command::new(py())
+            .args(["-m", "graphify", "update", "."])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    } else if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe)
+            .arg("graph")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
     }
-    let _ = Command::new(py)
-        .args(["-m", "graphify", "update", "."])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
 }
 
 /// `tokex graph`: blocking refresh with visible output; installs graphify if missing.
