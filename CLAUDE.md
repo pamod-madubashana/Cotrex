@@ -71,5 +71,7 @@ front-end-agnostic, so MCP is a new dispatch path over the same pipeline, not a 
 - **Never** put the word "claude" in a branch name or commit message.
 - **Never** add an AI co-author or attribution trailer (`Co-Authored-By: Claude …`,
   "Generated with…") to commits or PRs.
-- Concise subject line; short body explaining *why* when it isn't obvious. Don't leave fixup
-  commits that only patch a typo from the commit before — fold the fix in.
+- **Real-time commits (must follow):** after changing a file, commit that change immediately.
+  Don't batch unrelated edits into one commit or leave the tree dirty between steps — one logical
+  change, one commit, right away.
+- Concise subject line; short body explaining *why* when it isn't obvious.
