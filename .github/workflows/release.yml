@@ -1,10 +1,11 @@
 name: Release
+run-name: Release v${{ inputs.version }}
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version number (e.g. 0.1.0) — tags the release v<version>"
+        description: "Version number (e.g. 1.0.0) — tags the release v<version>"
         required: true
         type: string
 
@@ -63,5 +64,5 @@ jobs:
         run: |
           gh release create "v${{ inputs.version }}" dist/* \
             --repo "${{ github.repository }}" \
-            --title "v${{ inputs.version }}" \
+            --title "Release v${{ inputs.version }}" \
             --generate-notes
