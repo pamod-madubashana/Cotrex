@@ -51,10 +51,20 @@ stdin, a JSON intent.
 - Keep it sync. The 2-threads+mpsc model is deliberate; reach for async only if AEM ever
   multiplexes many concurrent execs.
 
+## LLM compression (`--llm`, opt-in)
+
+`aem run --llm "<cmd>"` sends the captured (RTK-filtered) output to an OpenAI-compatible
+chat-completions endpoint (`llm.rs`) and emits one extra `{"type":"insight", ...}` event
+(`status/root_cause/important_errors/suggested_fix`) — the agent reads that instead of full logs.
+Config is env-only (`AEM_LLM_URL`/`AEM_LLM_KEY`/`AEM_LLM_MODEL`), loaded from a gitignored `.env`
+via a tiny built-in loader. Missing config = fail fast in `main.rs`. The call is best-effort: a
+network/parse failure prints `(llm skipped: …)` and never changes the exit code. Without `--llm`,
+no key is read and no request is made.
+
 ## Out of scope for v1 (deferred, do not add speculatively)
 
-MCP server front-end, LLM-backed compression/planning (`--llm`), and a persisted execution graph.
-The core is front-end-agnostic, so MCP is a new dispatch path over the same pipeline, not a rewrite.
+MCP server front-end, LLM-backed `plan-stack`, and a persisted execution graph. The core is
+front-end-agnostic, so MCP is a new dispatch path over the same pipeline, not a rewrite.
 
 ## Commit & attribution rules (must follow)
 

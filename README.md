@@ -84,6 +84,21 @@ aem run "git status"
 echo '{"tool":"rtk","cmd":"cargo --version"}' | aem
 ```
 
+**Compress output with an LLM** (opt-in, fewer tokens for the agent):
+
+```bash
+aem run --llm "cargo test"
+```
+
+```jsonc
+// after the normal lines + result, one extra event:
+{"type":"insight","status":"failed","root_cause":"missing crate serde_json",
+ "important_errors":["cannot find crate `serde_json`"],"suggested_fix":"add serde_json to Cargo.toml"}
+```
+
+The agent can read just that insight instead of the full log. Needs an API key (below); without
+`--llm`, no key is read and no request is made.
+
 **Get a tech-stack recommendation:**
 
 ```bash
@@ -101,6 +116,22 @@ aem plan-stack "build a music player app"
 Failing commands classify error lines (`severity: "error"`), set `status: "failed"`, and propagate
 the underlying exit code.
 
+## LLM API key
+
+The `--llm` flag reads config from the environment (or a local `.env`). Copy the template and fill
+in a key from any free OpenAI-compatible provider:
+
+```bash
+cp .env.example .env
+# edit .env:
+#   AEM_LLM_URL=https://api.groq.com/openai/v1/chat/completions
+#   AEM_LLM_KEY=gsk_...
+#   AEM_LLM_MODEL=llama-3.1-8b-instant
+```
+
+`.env` is gitignored — your key never lands in a commit. Free endpoints that work out of the box:
+Groq, OpenRouter (`:free` models), and NVIDIA NIM. See [.env.example](.env.example) for URLs.
+
 ## Development
 
 ```bash
@@ -117,7 +148,7 @@ Deliberately out of scope for v1 — added when there's a consumer that needs th
 
 - **MCP server front-end** — agents calling AEM natively as tools. A new dispatch path over the
   same pipeline, not a rewrite.
-- **LLM-backed layer** — `--llm` for richer log compression and stack planning.
+- **LLM-backed `plan-stack`** — reuse the `--llm` path for stack recommendations.
 - **Persisted execution graph** — command/dependency/failure trace.
 
 ## License

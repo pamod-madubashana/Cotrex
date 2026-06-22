@@ -3,6 +3,7 @@
 //! the stream. AEM does not own execution; RTK does.
 
 mod intent;
+mod llm;
 mod normalize;
 mod orchestrate;
 mod plan;
@@ -25,6 +26,9 @@ struct Cli {
 enum Cmd {
     /// Run a command through RTK and stream normalized events.
     Run {
+        /// Compress output into a compact LLM insight (needs AEM_LLM_URL/AEM_LLM_KEY).
+        #[arg(long)]
+        llm: bool,
         /// The command line, e.g. "cargo test".
         command: String,
     },
@@ -41,7 +45,11 @@ fn main() {
     let mut err = io::stderr();
 
     let intent = match cli.cmd {
-        Some(Cmd::Run { command }) => Intent::from_command(command),
+        Some(Cmd::Run { llm, command }) => {
+            let mut i = Intent::from_command(command);
+            i.llm = llm;
+            i
+        }
         Some(Cmd::PlanStack { task }) => {
             let p = plan::plan(&task);
             println!("{}", serde_json::to_string_pretty(&p).unwrap());
@@ -68,7 +76,20 @@ fn main() {
         }
     };
 
-    match orchestrate::run(&intent, &mut out, &mut err) {
+    // Load LLM config only when requested; fail fast on missing setup rather than after running.
+    let llm_cfg = if intent.llm {
+        match llm::LlmConfig::from_env() {
+            Some(c) => Some(c),
+            None => {
+                eprintln!("aem: --llm requires AEM_LLM_URL and AEM_LLM_KEY (set them or add a .env; see README)");
+                exit(2);
+            }
+        }
+    } else {
+        None
+    };
+
+    match orchestrate::run(&intent, &mut out, &mut err, llm_cfg.as_ref()) {
         Ok(code) => exit(code),
         Err(e) => {
             eprintln!("aem: {e}");

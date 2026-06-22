@@ -18,6 +18,9 @@ pub struct Intent {
     pub command: String,
     #[serde(default = "default_true")]
     pub stream: bool,
+    /// Run output through the LLM compressor for a compact insight. Opt-in.
+    #[serde(default)]
+    pub llm: bool,
 }
 
 fn default_tool() -> String {
@@ -38,6 +41,7 @@ impl Intent {
             action: default_action(),
             command: command.into(),
             stream: true,
+            llm: false,
         }
     }
 

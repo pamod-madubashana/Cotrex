@@ -10,7 +10,12 @@ use std::sync::mpsc;
 use std::thread;
 
 use crate::intent::Intent;
+use crate::llm::LlmConfig;
 use crate::normalize::{normalize, Channel, LineEvent, Severity};
+
+/// Keep the last N output lines for the LLM. RTK already pre-filters, so this is a token guard.
+/// ponytail: last 200 lines; raise only if compression misses context past that window.
+const RAW_CAP: usize = 200;
 
 #[derive(serde::Serialize)]
 struct Result_ {
@@ -27,7 +32,12 @@ enum Msg {
 
 /// Run the intent through RTK. Writes normalized NDJSON events to `machine` (stdout) and a
 /// human summary to `human` (stderr). Returns the process exit code.
-pub fn run(intent: &Intent, machine: &mut impl Write, human: &mut impl Write) -> Result<i32, String> {
+pub fn run(
+    intent: &Intent,
+    machine: &mut impl Write,
+    human: &mut impl Write,
+    llm: Option<&LlmConfig>,
+) -> Result<i32, String> {
     intent.validate()?;
     let args = intent.to_rtk_args();
 
@@ -64,6 +74,7 @@ pub fn run(intent: &Intent, machine: &mut impl Write, human: &mut impl Write) ->
     reader(Channel::Stderr, err, tx);
 
     let mut errors = 0usize;
+    let mut raw: Vec<String> = Vec::new();
     let mut open = 2;
     while open > 0 {
         match rx.recv() {
@@ -72,6 +83,10 @@ pub fn run(intent: &Intent, machine: &mut impl Write, human: &mut impl Write) ->
                     errors += 1;
                 }
                 writeln!(machine, "{}", serde_json::to_string(&ev).unwrap()).ok();
+                raw.push(ev.line);
+                if raw.len() > RAW_CAP {
+                    raw.remove(0);
+                }
             }
             Ok(Msg::Done) => open -= 1,
             Err(_) => break,
@@ -83,5 +98,25 @@ pub fn run(intent: &Intent, machine: &mut impl Write, human: &mut impl Write) ->
     let result = Result_ { kind: "result", status, code };
     writeln!(machine, "{}", serde_json::to_string(&result).unwrap()).ok();
     writeln!(human, "‹ {status} (exit {code}, {errors} error line(s))").ok();
+
+    // Optional LLM compression: best-effort. A failed call never fails the exec.
+    if intent.llm {
+        if let Some(cfg) = llm {
+            match crate::llm::compress(cfg, &intent.command, code, &raw.join("\n")) {
+                Ok(ins) => {
+                    let mut ev = serde_json::to_value(&ins).unwrap();
+                    ev["type"] = serde_json::json!("insight");
+                    writeln!(machine, "{ev}").ok();
+                    writeln!(human, "  ⟐ {}", ins.root_cause).ok();
+                    if !ins.suggested_fix.is_empty() {
+                        writeln!(human, "  → {}", ins.suggested_fix).ok();
+                    }
+                }
+                Err(e) => {
+                    writeln!(human, "  (llm skipped: {e})").ok();
+                }
+            }
+        }
+    }
     Ok(code)
 }
