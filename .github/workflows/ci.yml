@@ -1,0 +1,18 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # vendor/rtk must be present for cargo to load the workspace manifest.
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      # Test only our crate; vendored rtk is not our code and is heavy to compile.
+      - run: cargo test -p aem
