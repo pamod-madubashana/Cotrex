@@ -47,8 +47,14 @@ One pipeline, four stages, shared by every front-end:
 line, terminated by a single `{"type":"result", ...}` line); the human-readable summary goes to
 **stderr**. Keep these separated by file descriptor — never mix human text into stdout.
 
-`main.rs` is dispatch only: a subcommand (`run`/`plan-stack`) or, with no subcommand and piped
-stdin, a JSON intent.
+`main.rs` is dispatch only: a subcommand (`run`/`plan-stack`/`setup`/`mcp`) or, with no subcommand
+and piped stdin, a JSON intent.
+
+**Front-ends share the core.** CLI, stdin-JSON, and the MCP server (`mcp.rs`, `tokex mcp`) all funnel
+into the same `orchestrate::run`. MCP is a hand-rolled JSON-RPC 2.0 stdio server (sync, no tokio)
+exposing a `run` tool; it captures the machine channel into a buffer and returns the events as the
+tool result. **stdout is the JSON-RPC channel in MCP mode** — the core writes to in-memory buffers,
+never stdout, so nothing corrupts the protocol.
 
 ## Invariants
 
@@ -74,10 +80,9 @@ post-install via `tokex setup` (interactive `inquire` prompts) — **not** a pro
 The call is best-effort: a network/parse failure prints `(llm skipped: …)` and never changes the
 exit code.
 
-## Out of scope for v1 (deferred, do not add speculatively)
+## Out of scope (deferred, do not add speculatively)
 
-MCP server front-end, LLM-backed `plan-stack`, and a persisted execution graph. The core is
-front-end-agnostic, so MCP is a new dispatch path over the same pipeline, not a rewrite.
+LLM-backed `plan-stack` and a persisted execution graph.
 
 ## Commit & attribution rules (must follow)
 

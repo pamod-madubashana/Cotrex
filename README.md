@@ -143,6 +143,25 @@ Settings are written to your OS config dir (`%APPDATA%\tokex\config.toml` on Win
 vars override the file for CI/power use. `tokex run --llm …` forces the insight on for one run
 regardless of the configured mode.
 
+## MCP server
+
+Agents that speak MCP can call Tokex natively instead of shelling out. Tokex runs as an MCP server
+over stdio and exposes a `run` tool that returns structured execution events.
+
+```bash
+tokex mcp        # JSON-RPC 2.0 over stdio
+```
+
+Register it with Claude Code:
+
+```bash
+claude mcp add tokex -- /absolute/path/to/tokex mcp
+```
+
+The `run` tool takes `{ "command": "cargo test", "llm": false }` and returns the normalized event
+list (stdout/stderr lines with severity, a result with exit code, and an optional LLM insight) —
+the same machine channel as the CLI, just delivered as a tool result.
+
 ## Development
 
 ```bash
@@ -157,8 +176,6 @@ See [CLAUDE.md](CLAUDE.md) for architecture and contributor rules.
 
 Deliberately out of scope for v1 — added when there's a consumer that needs them:
 
-- **MCP server front-end** — agents calling Tokex natively as tools. A new dispatch path over the
-  same pipeline, not a rewrite.
 - **LLM-backed `plan-stack`** — reuse the `--llm` path for stack recommendations.
 - **Persisted execution graph** — command/dependency/failure trace (vendored [graphify](vendor/graphify)).
 - **Single self-contained binary** — build `vendor/rtk` in a cargo workspace and have Tokex use the
