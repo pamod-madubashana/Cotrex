@@ -1,6 +1,6 @@
-//! AEM — Agent Execution Middleware.
+//! Tokex.
 //! A deterministic RTK orchestration layer: normalize agent intent, forward to RTK, normalize
-//! the stream. AEM does not own execution; RTK does.
+//! the stream. Tokex does not own execution; RTK does.
 
 mod intent;
 mod llm;
@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand};
 use intent::Intent;
 
 #[derive(Parser)]
-#[command(name = "aem", version, about = "Deterministic RTK orchestration layer for AI agents")]
+#[command(name = "tokex", version, about = "Deterministic RTK orchestration layer for AI agents")]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -26,7 +26,7 @@ struct Cli {
 enum Cmd {
     /// Run a command through RTK and stream normalized events.
     Run {
-        /// Compress output into a compact LLM insight (needs AEM_LLM_URL/AEM_LLM_KEY).
+        /// Compress output into a compact LLM insight (needs TOKEX_LLM_URL/TOKEX_LLM_KEY).
         #[arg(long)]
         llm: bool,
         /// The command line, e.g. "cargo test".
@@ -58,7 +58,7 @@ fn main() {
         // No subcommand: read an intent as JSON from stdin (pipe mode).
         None => {
             if io::stdin().is_terminal() {
-                eprintln!("usage: aem run \"<cmd>\" | aem plan-stack \"<task>\" | echo '<intent json>' | aem");
+                eprintln!("usage: tokex run \"<cmd>\" | tokex plan-stack \"<task>\" | echo '<intent json>' | tokex");
                 exit(2);
             }
             let mut buf = String::new();
@@ -81,7 +81,7 @@ fn main() {
         match llm::LlmConfig::from_env() {
             Some(c) => Some(c),
             None => {
-                eprintln!("aem: --llm requires AEM_LLM_URL and AEM_LLM_KEY (set them or add a .env; see README)");
+                eprintln!("tokex: --llm requires TOKEX_LLM_URL and TOKEX_LLM_KEY (set them or add a .env; see README)");
                 exit(2);
             }
         }
@@ -92,7 +92,7 @@ fn main() {
     match orchestrate::run(&intent, &mut out, &mut err, llm_cfg.as_ref()) {
         Ok(code) => exit(code),
         Err(e) => {
-            eprintln!("aem: {e}");
+            eprintln!("tokex: {e}");
             exit(1);
         }
     }

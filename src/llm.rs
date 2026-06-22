@@ -15,13 +15,13 @@ impl LlmConfig {
     /// Read config from the environment (after loading `.env`). Returns None if URL or KEY is unset.
     pub fn from_env() -> Option<Self> {
         load_dotenv();
-        let url = env::var("AEM_LLM_URL").ok()?;
-        let key = env::var("AEM_LLM_KEY").ok()?;
+        let url = env::var("TOKEX_LLM_URL").ok()?;
+        let key = env::var("TOKEX_LLM_KEY").ok()?;
         if url.trim().is_empty() || key.trim().is_empty() {
             return None;
         }
         let model =
-            env::var("AEM_LLM_MODEL").unwrap_or_else(|_| "meta-llama/llama-3.1-8b-instruct".into());
+            env::var("TOKEX_LLM_MODEL").unwrap_or_else(|_| "meta-llama/llama-3.1-8b-instruct".into());
         Some(LlmConfig { url, key, model })
     }
 }
