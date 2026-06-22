@@ -1,3 +1,8 @@
+[workspace]
+members = [".", "vendor/rtk"]
+default-members = [".", "vendor/rtk"]
+resolver = "2"
+
 [package]
 name = "aem"
 version = "0.1.0"
