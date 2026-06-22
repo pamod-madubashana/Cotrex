@@ -1,4 +1,4 @@
-//! Stream Normalizer: RTK emits plain text lines; AEM tags each as a typed event with severity.
+//! Stream Normalizer: RTK emits plain text lines; Tokex tags each as a typed event with severity.
 
 use serde::Serialize;
 
@@ -66,7 +66,7 @@ mod tests {
         assert_eq!(classify("error: cannot find crate serde"), Severity::Error);
         assert_eq!(classify("test result: FAILED"), Severity::Error);
         assert_eq!(classify("warning: unused import"), Severity::Warning);
-        assert_eq!(classify("Compiling aem v0.1.0"), Severity::Info);
+        assert_eq!(classify("Compiling tokex v0.1.0"), Severity::Info);
     }
 
     #[test]

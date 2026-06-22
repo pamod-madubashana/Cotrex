@@ -1,6 +1,5 @@
 <p align="center">
-  <!-- TODO: replace with the real project icon -->
-  <img src="https://placehold.co/500x150?text=AEM" alt="AEM - Agent Execution Middleware" width="500">
+  <img src="assets/tokex.png" alt="Tokex" width="220">
 </p>
 
 <p align="center">
@@ -14,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="#what-is-aem">About</a> &bull;
+  <a href="#what-is-tokex">About</a> &bull;
   <a href="#installation">Install</a> &bull;
   <a href="#usage">Usage</a> &bull;
   <a href="CLAUDE.md">Architecture</a> &bull;
@@ -23,11 +22,11 @@
 
 ---
 
-## What is AEM
+## What is Tokex
 
-AEM (Agent Execution Middleware) sits between an AI agent and the system. It takes an agent's
+Tokex sits between an AI agent and the system. It takes an agent's
 **intent**, forwards it to [RTK](https://github.com/rtk-ai/rtk) — the execution truth layer — and
-returns a **normalized, dual-channel** result. AEM never runs a raw command itself; it invokes
+returns a **normalized, dual-channel** result. Tokex never runs a raw command itself; it invokes
 `rtk <subcommand>` and tags what RTK emits.
 
 - **Machine channel** (`stdout`): newline-delimited JSON, one event per line.
@@ -61,10 +60,10 @@ git clone --recursive <repo>
 git submodule update --init --recursive
 
 cargo build --release
-# binary at target/release/aem
+# binary at target/release/tokex
 ```
 
-> Note: vendoring puts the sources in-tree, but the build doesn't compile/bundle them yet — AEM
+> Note: vendoring puts the sources in-tree, but the build doesn't compile/bundle them yet — Tokex
 > currently still spawns `rtk` from your `PATH`. Building a single self-contained binary from
 > `vendor/rtk` is a follow-up (see Roadmap).
 
@@ -73,7 +72,7 @@ cargo build --release
 **Run a command through RTK:**
 
 ```bash
-aem run "git status"
+tokex run "git status"
 ```
 
 ```jsonc
@@ -90,13 +89,13 @@ aem run "git status"
 **Pipe an intent as JSON** (no subcommand):
 
 ```bash
-echo '{"tool":"rtk","cmd":"cargo --version"}' | aem
+echo '{"tool":"rtk","cmd":"cargo --version"}' | tokex
 ```
 
 **Compress output with an LLM** (opt-in, fewer tokens for the agent):
 
 ```bash
-aem run --llm "cargo test"
+tokex run --llm "cargo test"
 ```
 
 ```jsonc
@@ -111,7 +110,7 @@ The agent can read just that insight instead of the full log. Needs an API key (
 **Get a tech-stack recommendation:**
 
 ```bash
-aem plan-stack "build a music player app"
+tokex plan-stack "build a music player app"
 ```
 ```json
 {
@@ -133,9 +132,9 @@ in a key from any free OpenAI-compatible provider:
 ```bash
 cp .env.example .env
 # edit .env:
-#   AEM_LLM_URL=https://api.groq.com/openai/v1/chat/completions
-#   AEM_LLM_KEY=gsk_...
-#   AEM_LLM_MODEL=llama-3.1-8b-instant
+#   TOKEX_LLM_URL=https://api.groq.com/openai/v1/chat/completions
+#   TOKEX_LLM_KEY=gsk_...
+#   TOKEX_LLM_MODEL=llama-3.1-8b-instant
 ```
 
 `.env` is gitignored — your key never lands in a commit. Free endpoints that work out of the box:
@@ -155,11 +154,11 @@ See [CLAUDE.md](CLAUDE.md) for architecture and contributor rules.
 
 Deliberately out of scope for v1 — added when there's a consumer that needs them:
 
-- **MCP server front-end** — agents calling AEM natively as tools. A new dispatch path over the
+- **MCP server front-end** — agents calling Tokex natively as tools. A new dispatch path over the
   same pipeline, not a rewrite.
 - **LLM-backed `plan-stack`** — reuse the `--llm` path for stack recommendations.
 - **Persisted execution graph** — command/dependency/failure trace (vendored [graphify](vendor/graphify)).
-- **Single self-contained binary** — build `vendor/rtk` in a cargo workspace and have AEM use the
+- **Single self-contained binary** — build `vendor/rtk` in a cargo workspace and have Tokex use the
   vendored binary instead of requiring `rtk` on `PATH`, so there's nothing to install separately.
 
 ## License

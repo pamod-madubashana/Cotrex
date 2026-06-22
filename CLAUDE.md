@@ -4,17 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-AEM (Agent Execution Middleware) is a **deterministic RTK orchestration layer**. It normalizes
+Tokex is a **deterministic RTK orchestration layer**. It normalizes
 agent intent and stream output **without owning execution**. RTK (`rtk`, an external binary that
-must be on PATH) is the execution truth layer; AEM never runs a raw command — it invokes
-`rtk <subcommand>` and normalizes what RTK returns. If `rtk` is not on PATH, `aem run` fails at
+must be on PATH) is the execution truth layer; Tokex never runs a raw command — it invokes
+`rtk <subcommand>` and normalizes what RTK returns. If `rtk` is not on PATH, `tokex run` fails at
 spawn — that dependency is functional, not optional.
 
 ## Vendored dependencies
 
 `rtk` and `graphify` are git submodules under `vendor/`. Clone with `--recursive` (or
 `git submodule update --init --recursive`). They are vendored as source; the build does **not** yet
-compile or bundle them — AEM still spawns `rtk` from `PATH`. Producing a single self-contained
+compile or bundle them — Tokex still spawns `rtk` from `PATH`. Producing a single self-contained
 binary from `vendor/rtk` is deferred.
 
 ## Commands
@@ -52,18 +52,18 @@ stdin, a JSON intent.
 
 ## Invariants
 
-- **AEM never bypasses RTK.** New tool support = a new entry in `RTK_NATIVE` or a new rtk
+- **Tokex never bypasses RTK.** New tool support = a new entry in `RTK_NATIVE` or a new rtk
   subcommand, not a direct `Command::new("cargo")`.
 - **stdout is machine-only.** Anything a human reads goes to stderr.
-- Keep it sync. The 2-threads+mpsc model is deliberate; reach for async only if AEM ever
+- Keep it sync. The 2-threads+mpsc model is deliberate; reach for async only if Tokex ever
   multiplexes many concurrent execs.
 
 ## LLM compression (`--llm`, opt-in)
 
-`aem run --llm "<cmd>"` sends the captured (RTK-filtered) output to an OpenAI-compatible
+`tokex run --llm "<cmd>"` sends the captured (RTK-filtered) output to an OpenAI-compatible
 chat-completions endpoint (`llm.rs`) and emits one extra `{"type":"insight", ...}` event
 (`status/root_cause/important_errors/suggested_fix`) — the agent reads that instead of full logs.
-Config is env-only (`AEM_LLM_URL`/`AEM_LLM_KEY`/`AEM_LLM_MODEL`), loaded from a gitignored `.env`
+Config is env-only (`TOKEX_LLM_URL`/`TOKEX_LLM_KEY`/`TOKEX_LLM_MODEL`), loaded from a gitignored `.env`
 via a tiny built-in loader. Missing config = fail fast in `main.rs`. The call is best-effort: a
 network/parse failure prints `(llm skipped: …)` and never changes the exit code. Without `--llm`,
 no key is read and no request is made.
@@ -90,7 +90,7 @@ front-end-agnostic, so MCP is a new dispatch path over the same pipeline, not a 
 1. Branch off `main` with a fresh, descriptive name. **Never** put "claude" in a branch name.
 2. Make changes there (real-time commits still apply — commit each logical change immediately).
 3. `gh pr create` to open a PR.
-4. **Wait for the `CI` workflow to pass** (`.github/workflows/ci.yml` builds + tests `aem`). Do not
+4. **Wait for the `CI` workflow to pass** (`.github/workflows/ci.yml` builds + tests `tokex`). Do not
    merge on red.
 5. Merge once green (`gh pr merge --squash --delete-branch`).
 6. Clean up and sync: `git checkout main && git pull`, and delete the local branch.
