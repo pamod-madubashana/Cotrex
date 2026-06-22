@@ -14,12 +14,17 @@ mod plan;
 use std::io::{self, IsTerminal, Read};
 use std::process::exit;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use intent::Intent;
 
 #[derive(Parser)]
-#[command(name = "tokex", version, about = "Deterministic RTK orchestration layer for AI agents")]
+#[command(
+    name = "tokex",
+    version,
+    about = "Deterministic RTK orchestration layer for AI agents",
+    after_help = "Stdin mode: pipe a JSON intent instead of a subcommand, e.g.\n  echo '{\"tool\":\"rtk\",\"cmd\":\"git status\"}' | tokex"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -44,7 +49,7 @@ enum Cmd {
     Setup,
     /// Run as an MCP server over stdio (for agents that call tools natively).
     Mcp,
-    /// Download the latest rtk release for this OS into the tokex data dir.
+    /// Pre-fetch the pinned rtk release for this OS (also happens automatically on first run).
     InstallRtk,
 }
 
@@ -84,9 +89,11 @@ fn main() {
         }
         // No subcommand: read an intent as JSON from stdin (pipe mode).
         None => {
+            // No subcommand and interactive: show full help rather than a cryptic usage line.
             if io::stdin().is_terminal() {
-                eprintln!("usage: tokex run \"<cmd>\" | tokex plan-stack \"<task>\" | echo '<intent json>' | tokex");
-                exit(2);
+                Cli::command().print_help().ok();
+                println!();
+                exit(0);
             }
             let mut buf = String::new();
             if io::stdin().read_to_string(&mut buf).is_err() || buf.trim().is_empty() {
