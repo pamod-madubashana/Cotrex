@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version number (e.g. 1.0.0) — tags the release v<version>"
+        description: "Version, no leading v (e.g. 1.0.0) — tags the release v<version>"
         required: true
         type: string
 
@@ -22,8 +22,6 @@ jobs:
             name: linux-x86_64
           - os: macos-latest
             name: macos-arm64
-          - os: macos-13
-            name: macos-x86_64
           - os: windows-latest
             name: windows-x86_64
     runs-on: ${{ matrix.os }}
@@ -37,7 +35,7 @@ jobs:
       - name: Package tokex + rtk
         shell: bash
         run: |
-          VER="${{ inputs.version }}"
+          VER="${{ inputs.version }}"; VER="${VER#v}"   # accept 1.0.0 or v1.0.0
           NAME="${{ matrix.name }}"
           mkdir dist
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -62,7 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v${{ inputs.version }}" dist/* \
+          VER="${{ inputs.version }}"; VER="${VER#v}"   # accept 1.0.0 or v1.0.0
+          gh release create "v${VER}" dist/* \
             --repo "${{ github.repository }}" \
-            --title "Release v${{ inputs.version }}" \
+            --title "Release v${VER}" \
             --generate-notes
