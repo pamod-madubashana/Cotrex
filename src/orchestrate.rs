@@ -30,6 +30,20 @@ enum Msg {
     Done,
 }
 
+/// Resolve the rtk binary: prefer one vendored next to our own exe (workspace build drops both in
+/// the same target dir), else fall back to `rtk` on PATH.
+fn rtk_path() -> std::path::PathBuf {
+    let name = if cfg!(windows) { "rtk.exe" } else { "rtk" };
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(cand) = exe.parent().map(|d| d.join(name)) {
+            if cand.is_file() {
+                return cand;
+            }
+        }
+    }
+    std::path::PathBuf::from("rtk")
+}
+
 /// Run the intent through RTK. Writes normalized NDJSON events to `machine` (stdout) and a
 /// human summary to `human` (stderr). Returns the process exit code.
 pub fn run(
@@ -44,7 +58,7 @@ pub fn run(
     // PROCESS_START on the human channel only; machine channel is pure line/result events.
     writeln!(human, "› rtk {}", args.join(" ")).ok();
 
-    let mut child = Command::new("rtk")
+    let mut child = Command::new(rtk_path())
         .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
