@@ -82,3 +82,15 @@ front-end-agnostic, so MCP is a new dispatch path over the same pipeline, not a 
   Don't batch unrelated edits into one commit or leave the tree dirty between steps — one logical
   change, one commit, right away.
 - Concise subject line; short body explaining *why* when it isn't obvious.
+
+## Branch & PR workflow (must follow)
+
+**Never push to `main`.** Every change ships through a PR:
+
+1. Branch off `main` with a fresh, descriptive name. **Never** put "claude" in a branch name.
+2. Make changes there (real-time commits still apply — commit each logical change immediately).
+3. `gh pr create` to open a PR.
+4. **Wait for the `CI` workflow to pass** (`.github/workflows/ci.yml` builds + tests `aem`). Do not
+   merge on red.
+5. Merge once green (`gh pr merge --squash --delete-branch`).
+6. Clean up and sync: `git checkout main && git pull`, and delete the local branch.
