@@ -1,4 +1,7 @@
-//! Stream Normalizer: RTK emits plain text lines; Tokex tags each as a typed event with severity.
+//! Stream Normalizer: RTK emits plain text lines; Tokex classifies each by severity so the
+//! orchestrator can count errors and decide whether a failure is worth an LLM insight. The line
+//! text itself is passed through verbatim — wrapping every line in JSON would cost the agent more
+//! tokens than the raw command output it's meant to compress.
 
 use serde::Serialize;
 
@@ -10,27 +13,9 @@ pub enum Severity {
     Info,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Channel {
-    Stdout,
-    Stderr,
-}
-
-impl Channel {
-    fn as_str(self) -> &'static str {
-        match self {
-            Channel::Stdout => "stdout",
-            Channel::Stderr => "stderr",
-        }
-    }
-}
-
-/// One normalized line of RTK output.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+/// One normalized line of RTK output: the verbatim text plus its classified severity.
+#[derive(Debug, Clone, PartialEq)]
 pub struct LineEvent {
-    /// "stdout" | "stderr"
-    #[serde(rename = "type")]
-    pub channel: &'static str,
     pub line: String,
     pub severity: Severity,
 }
@@ -48,13 +33,9 @@ pub fn classify(line: &str) -> Severity {
     }
 }
 
-pub fn normalize(channel: Channel, line: String) -> LineEvent {
+pub fn normalize(line: String) -> LineEvent {
     let severity = classify(&line);
-    LineEvent {
-        channel: channel.as_str(),
-        line,
-        severity,
-    }
+    LineEvent { line, severity }
 }
 
 #[cfg(test)]
@@ -70,9 +51,9 @@ mod tests {
     }
 
     #[test]
-    fn normalize_tags_channel() {
-        let e = normalize(Channel::Stderr, "panic at the disco".into());
-        assert_eq!(e.channel, "stderr");
+    fn normalize_keeps_line_verbatim() {
+        let e = normalize("panic at the disco".into());
+        assert_eq!(e.line, "panic at the disco");
         assert_eq!(e.severity, Severity::Error);
     }
 }
