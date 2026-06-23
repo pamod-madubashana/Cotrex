@@ -56,12 +56,21 @@ enum Cmd {
     Graph,
 }
 
-fn main() {
-    let cli = Cli::parse();
-    let mut out = io::stdout();
-    let mut err = io::stderr();
+/// Top-level subcommands. Anything else as the first arg is treated as a command to run, so
+/// `tokex git status` works like `tokex run "git status"` (mirrors how rtk itself is invoked).
+const SUBCOMMANDS: &[&str] = &["run", "plan-stack", "setup", "mcp", "install-rtk", "graph", "help"];
 
-    let mut intent = match cli.cmd {
+fn main() {
+    // Passthrough: a first arg that isn't a known subcommand or a flag is the command itself.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|f| is_passthrough(f)) {
+        run_intent(Intent::from_command(args[1..].join(" ")));
+        return;
+    }
+
+    let cli = Cli::parse();
+
+    let intent = match cli.cmd {
         Some(Cmd::Run { llm, command }) => {
             let mut i = Intent::from_command(command);
             i.llm = llm;
@@ -131,6 +140,15 @@ fn main() {
         }
     };
 
+    run_intent(intent);
+}
+
+/// Shared run tail: apply config modes, orchestrate through rtk, exit with its code. Used by the
+/// `run` subcommand, stdin-JSON mode, and the bare `tokex <command>` passthrough.
+fn run_intent(mut intent: Intent) {
+    let mut out = io::stdout();
+    let mut err = io::stderr();
+
     // Apply configured modes. `--llm` and a JSON `"llm": true` both force the insight on; otherwise
     // the configured compression mode decides.
     let cfg = config::load();
@@ -164,5 +182,26 @@ fn main() {
             eprintln!("tokex: {e}");
             exit(1);
         }
+    }
+}
+
+/// A first arg is a command to run (not a subcommand) when it isn't a flag and isn't one of our
+/// known subcommands. ponytail: collisions (a binary literally named `run`) lose to the subcommand.
+fn is_passthrough(first: &str) -> bool {
+    !first.starts_with('-') && !SUBCOMMANDS.contains(&first)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn passthrough_routes_commands_not_subcommands() {
+        assert!(is_passthrough("git"));
+        assert!(is_passthrough("ls"));
+        assert!(!is_passthrough("run"));
+        assert!(!is_passthrough("plan-stack"));
+        assert!(!is_passthrough("--help"));
+        assert!(!is_passthrough("-V"));
     }
 }

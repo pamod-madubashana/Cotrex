@@ -57,7 +57,7 @@ tokex plan-stack "build a music player app"
 ```
 
 ```json
-{ "task": "build a music player app", "stack": "tauri", "reason": "…", "init_commands": ["npm create tauri-app@latest"] }
+{ "task": "build a music player app", "stack": "tauri", "reason": "…" }
 ```
 
 Next: [MCP](mcp).
