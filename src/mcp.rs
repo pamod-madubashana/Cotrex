@@ -150,13 +150,14 @@ fn tool_run(params: &Value, cfg: &Config) -> Value {
     let llm_requested = args.get("llm").and_then(Value::as_bool).unwrap_or(false);
 
     let mut intent = Intent::from_command(command);
-    intent.llm = llm_requested || cfg.compression == "llm";
+    intent.llm = llm_requested; // explicit force; llm mode only analyzes failures (below)
     let opts = Options {
         raw: cfg.compression == "off",
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
+        llm_on_failure: cfg.compression == "llm",
     };
     // Best-effort LLM: if requested but unconfigured, just run without the insight.
-    let llm_cfg = if intent.llm { LlmConfig::from_config(cfg) } else { None };
+    let llm_cfg = if intent.llm || opts.llm_on_failure { LlmConfig::from_config(cfg) } else { None };
 
     // Capture the machine channel; discard the human summary. stdout stays the protocol channel.
     let mut machine: Vec<u8> = Vec::new();
@@ -166,11 +167,9 @@ fn tool_run(params: &Value, cfg: &Config) -> Value {
             if cfg.graph_auto {
                 crate::graphify::auto_update(&intent.command);
             }
-            let events: Vec<Value> = String::from_utf8_lossy(&machine)
-                .lines()
-                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-                .collect();
-            let text = serde_json::to_string_pretty(&json!({"events": events})).unwrap();
+            // The machine channel is raw output lines plus a JSON result footer (and an insight
+            // line on failure) — hand it back verbatim; re-wrapping it would only add tokens.
+            let text = String::from_utf8_lossy(&machine).to_string();
             let mut content = vec![json!({"type": "text", "text": text})];
             // If we can't tell which agent this is, ask the model to identify itself so the graphify
             // code-map skill can be installed for the right platform.

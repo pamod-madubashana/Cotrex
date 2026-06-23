@@ -11,7 +11,7 @@ use std::thread;
 
 use crate::intent::Intent;
 use crate::llm::LlmConfig;
-use crate::normalize::{normalize, Channel, LineEvent, Severity};
+use crate::normalize::{normalize, LineEvent, Severity};
 
 /// Keep the last N output lines for the LLM. RTK already pre-filters, so this is a token guard.
 /// ponytail: last 200 lines; raise only if compression misses context past that window.
@@ -37,6 +37,10 @@ pub struct Options {
     pub raw: bool,
     /// rtk_verbosity=ultra-compact: pass `--ultra-compact` to rtk.
     pub ultra_compact: bool,
+    /// compression=llm: analyze with the model, but only when the command failed. A successful
+    /// `git status` already returns compact rtk output — sending it to the model would burn tokens
+    /// (and block on the network) for an insight that just says "no issues".
+    pub llm_on_failure: bool,
 }
 
 /// Run the intent through RTK. Writes normalized NDJSON events to `machine` (stdout) and a
@@ -70,13 +74,13 @@ pub fn run(
         .map_err(|e| format!("failed to spawn rtk at {}: {e}", rtk.display()))?;
 
     let (tx, rx) = mpsc::channel();
-    let reader = |ch: Channel, pipe: Option<Box<dyn std::io::Read + Send>>, tx: mpsc::Sender<Msg>| {
+    let reader = |pipe: Option<Box<dyn std::io::Read + Send>>, tx: mpsc::Sender<Msg>| {
         thread::spawn(move || {
             if let Some(p) = pipe {
                 for line in BufReader::new(p).lines() {
                     match line {
                         Ok(l) => {
-                            tx.send(Msg::Line(normalize(ch, l))).ok();
+                            tx.send(Msg::Line(normalize(l))).ok();
                         }
                         Err(_) => break,
                     }
@@ -88,8 +92,8 @@ pub fn run(
 
     let out = child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>);
     let err = child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>);
-    reader(Channel::Stdout, out, tx.clone());
-    reader(Channel::Stderr, err, tx);
+    reader(out, tx.clone());
+    reader(err, tx);
 
     let mut errors = 0usize;
     let mut raw: Vec<String> = Vec::new();
@@ -100,7 +104,9 @@ pub fn run(
                 if ev.severity == Severity::Error {
                     errors += 1;
                 }
-                writeln!(machine, "{}", serde_json::to_string(&ev).unwrap()).ok();
+                // Pass the line through verbatim — raw output is the whole point of compression.
+                // Status/severity ride on the single result footer (and the insight on failure).
+                writeln!(machine, "{}", ev.line).ok();
                 raw.push(ev.line);
                 if raw.len() > RAW_CAP {
                     raw.remove(0);
@@ -118,7 +124,9 @@ pub fn run(
     writeln!(human, "‹ {status} (exit {code}, {errors} error line(s))").ok();
 
     // Optional LLM compression: best-effort. A failed call never fails the exec.
-    if intent.llm {
+    // `intent.llm` forces it on (explicit --llm); otherwise llm mode only analyzes failures.
+    let run_insight = intent.llm || (opts.llm_on_failure && (code != 0 || errors > 0));
+    if run_insight {
         if let Some(cfg) = llm {
             match crate::llm::compress(cfg, &intent.command, code, &raw.join("\n")) {
                 Ok(ins) => {

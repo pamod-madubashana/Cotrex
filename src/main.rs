@@ -10,7 +10,7 @@ mod llm;
 mod mcp;
 mod normalize;
 mod orchestrate;
-mod plan;
+mod prompt;
 
 use std::io::{self, IsTerminal, Read};
 use std::process::exit;
@@ -41,11 +41,6 @@ enum Cmd {
         /// The command line, e.g. "cargo test".
         command: String,
     },
-    /// Recommend a tech stack for a task.
-    PlanStack {
-        /// Free-text task description.
-        task: String,
-    },
     /// Interactive setup: choose provider, enter API key, pick modes.
     Setup,
     /// Run as an MCP server over stdio (for agents that call tools natively).
@@ -58,13 +53,21 @@ enum Cmd {
 
 /// Top-level subcommands. Anything else as the first arg is treated as a command to run, so
 /// `tokex git status` works like `tokex run "git status"` (mirrors how rtk itself is invoked).
-const SUBCOMMANDS: &[&str] = &["run", "plan-stack", "setup", "mcp", "install-rtk", "graph", "help"];
+const SUBCOMMANDS: &[&str] = &["run", "setup", "mcp", "install-rtk", "graph", "help"];
 
 fn main() {
-    // Passthrough: a first arg that isn't a known subcommand or a flag is the command itself.
+    // Two bare forms when the first arg isn't a subcommand/flag:
+    //   tokex git status         -> several args -> a command, run through rtk
+    //   tokex "plan-stack: foo"  -> one arg      -> a prompt (see prompt::classify)
+    // Quoting is the signal: a quoted string is one arg, so `tokex "git status"` is a prompt.
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).is_some_and(|f| is_passthrough(f)) {
-        run_intent(Intent::from_command(args[1..].join(" ")));
+        let rest = &args[1..];
+        if rest.len() >= 2 {
+            run_intent(Intent::from_command(rest.join(" ")));
+        } else {
+            dispatch_one(&rest[0]);
+        }
         return;
     }
 
@@ -75,16 +78,6 @@ fn main() {
             let mut i = Intent::from_command(command);
             i.llm = llm;
             i
-        }
-        Some(Cmd::PlanStack { task }) => {
-            let cfg = config::load();
-            let llm_cfg = llm::LlmConfig::from_config(&cfg);
-            let p = plan::plan(&task, llm_cfg.as_ref()).unwrap_or_else(|e| {
-                eprintln!("tokex: LLM stack planning skipped: {e}");
-                plan::heuristic_plan(&task)
-            });
-            println!("{}", serde_json::to_string_pretty(&p).unwrap());
-            return;
         }
         Some(Cmd::Setup) => {
             if let Err(e) = config::run_setup() {
@@ -145,27 +138,28 @@ fn main() {
 
 /// Shared run tail: apply config modes, orchestrate through rtk, exit with its code. Used by the
 /// `run` subcommand, stdin-JSON mode, and the bare `tokex <command>` passthrough.
-fn run_intent(mut intent: Intent) {
+fn run_intent(intent: Intent) {
     let mut out = io::stdout();
     let mut err = io::stderr();
 
-    // Apply configured modes. `--llm` and a JSON `"llm": true` both force the insight on; otherwise
-    // the configured compression mode decides.
+    // Apply configured modes. `--llm` / JSON `"llm": true` force the insight on always; the `llm`
+    // compression mode only analyzes failures (a successful command stays token-free).
     let cfg = config::load();
-    intent.llm = intent.llm || cfg.compression == "llm";
     let opts = orchestrate::Options {
         raw: cfg.compression == "off",
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
+        llm_on_failure: cfg.compression == "llm",
     };
 
-    // Load LLM config only when needed; fail fast on missing setup rather than after running.
-    let llm_cfg = if intent.llm {
+    // Load LLM config when it could be used. Fail fast only when `--llm` explicitly demanded it.
+    let llm_cfg = if intent.llm || opts.llm_on_failure {
         match llm::LlmConfig::from_config(&cfg) {
             Some(c) => Some(c),
-            None => {
+            None if intent.llm => {
                 eprintln!("tokex: LLM compression needs an API key — run `tokex setup`");
                 exit(2);
             }
+            None => None,
         }
     } else {
         None
@@ -185,10 +179,49 @@ fn run_intent(mut intent: Intent) {
     }
 }
 
-/// A first arg is a command to run (not a subcommand) when it isn't a flag and isn't one of our
-/// known subcommands. ponytail: collisions (a binary literally named `run`) lose to the subcommand.
+/// A first arg is not a subcommand (so it's a command or a prompt) when it isn't a flag and isn't
+/// one of our known subcommands. ponytail: collisions (a binary named `run`) lose to the subcommand.
 fn is_passthrough(first: &str) -> bool {
     !first.starts_with('-') && !SUBCOMMANDS.contains(&first)
+}
+
+/// Handle a single bare argument: a JSON / `category: text` / free-text prompt, or a lone command.
+fn dispatch_one(arg: &str) {
+    match prompt::classify(arg) {
+        prompt::Dispatch::Command(cmd) => run_intent(Intent::from_command(cmd)),
+        prompt::Dispatch::Json(s) => match prompt::parse_json(&s) {
+            Ok(pairs) => run_prompt(pairs),
+            Err(e) => {
+                eprintln!("tokex: {e}");
+                exit(2);
+            }
+        },
+        prompt::Dispatch::Category(cat, text) => run_prompt(vec![(cat, text)]),
+        prompt::Dispatch::Prompt(text) => run_prompt(vec![(String::new(), text)]),
+    }
+}
+
+/// Run category prompts through the LLM and print the combined JSON answer to stdout (thinking
+/// streams to stderr inside `prompt::run`).
+fn run_prompt(pairs: Vec<(String, String)>) -> ! {
+    let cfg = config::load();
+    let llm_cfg = match llm::LlmConfig::from_config(&cfg) {
+        Some(c) => c,
+        None => {
+            eprintln!("tokex: prompts need an API key — run `tokex setup`");
+            exit(2);
+        }
+    };
+    match prompt::run(&pairs, &llm_cfg) {
+        Ok(v) => {
+            println!("{}", serde_json::to_string_pretty(&v).unwrap());
+            exit(0);
+        }
+        Err(e) => {
+            eprintln!("tokex: {e}");
+            exit(1);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -200,7 +233,7 @@ mod tests {
         assert!(is_passthrough("git"));
         assert!(is_passthrough("ls"));
         assert!(!is_passthrough("run"));
-        assert!(!is_passthrough("plan-stack"));
+        assert!(!is_passthrough("setup"));
         assert!(!is_passthrough("--help"));
         assert!(!is_passthrough("-V"));
     }
