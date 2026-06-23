@@ -1,10 +1,12 @@
-//! graphify integration: tokex keeps the code map fresh so agents only ever *read* it
+//! graphify integration: tokex keeps the code map fresh so agents only **read** it
 //! (`graphify-out/GRAPH_REPORT.md`, `graphify-out/wiki/`) and never spend a turn updating it.
 //!
-//! graphify is a Python tool (`pip install graphifyy`, run via `python -m graphify`). Updates are
-//! AST-only — no LLM/token cost. tokex auto-installs it once and refreshes in the background after
-//! code-changing runs. Everything here is best-effort: it never blocks or fails a tokex run.
+//! graphify is a Python tool (`pip install graphifyy`, run via `python -m graphify ...`, AST-only —
+//! no token cost). tokex auto-installs it once and **registers its skill for the agent actually in
+//! use** (not just Claude): resolved from config, else env auto-detect, else by asking the user.
+//! Everything here is best-effort: it never blocks or fails a tokex run.
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -31,7 +33,6 @@ pub fn touches_code(command: &str) -> bool {
     true
 }
 
-/// `python` or `python3`, whichever responds.
 fn py() -> &'static str {
     if run_quiet("python", &["--version"]) {
         "python"
@@ -50,24 +51,36 @@ fn run_quiet(prog: &str, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-fn marker() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("tokex").join(".graphify-ok"))
+/// Run inheriting this process's stdio (visible under `tokex graph`/`tokex setup`, silent when the
+/// bootstrap runs detached with null stdio).
+fn run_inherit(prog: &str, args: &[&str]) -> bool {
+    Command::new(prog)
+        .args(args)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
-fn write_marker() {
-    if let Some(m) = marker() {
-        if let Some(p) = m.parent() {
-            let _ = std::fs::create_dir_all(p);
+fn data_file(name: &str) -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("tokex").join(name))
+}
+
+fn exists(p: Option<PathBuf>) -> bool {
+    p.map(|m| m.exists()).unwrap_or(false)
+}
+
+fn touch(p: Option<PathBuf>) {
+    if let Some(m) = p {
+        if let Some(d) = m.parent() {
+            let _ = std::fs::create_dir_all(d);
         }
         let _ = std::fs::write(&m, b"ok");
     }
 }
 
-/// One-time bootstrap (cached via a marker so it runs once): make graphifyy importable
-/// (auto-`pip install`), then register the graphify skill with the agent (`graphify install`) so the
-/// assistant knows to read the map. Returns false if Python/pip can't provide graphify.
-fn ensure(py: &str, verbose: bool) -> bool {
-    if marker().map(|m| m.exists()).unwrap_or(false) {
+/// Make graphifyy importable, auto-`pip install` once (cached via the package marker).
+fn ensure_package(py: &str, verbose: bool) -> bool {
+    if exists(data_file(".graphify-ok")) {
         return true;
     }
     let mut importable = run_quiet(py, &["-c", "import graphify"]);
@@ -78,28 +91,85 @@ fn ensure(py: &str, verbose: bool) -> bool {
         importable = run_quiet(py, &["-m", "pip", "install", "--quiet", "graphifyy"])
             && run_quiet(py, &["-c", "import graphify"]);
     }
-    if !importable {
-        return false;
+    if importable {
+        touch(data_file(".graphify-ok"));
+        true
+    } else {
+        false
     }
-    // Register the graphify skill with the agent (one-time). Best-effort; inherits this process's
-    // stdio (visible under `tokex graph`, silent when the bootstrap runs detached).
-    if verbose {
-        eprintln!("tokex: registering graphify skill with your agent …");
-    }
-    let _ = Command::new(py).args(["-m", "graphify", "install"]).status();
-    write_marker();
-    true
 }
 
-/// Best-effort refresh after a code-changing run — never blocks the run.
-/// If already set up, fire a cheap incremental `graphify update .` in the background. If not, run
-/// the one-time bootstrap detached (via `tokex graph`) so the install/skill-register never stalls
-/// the command. ponytail: no lock — a rare double-bootstrap is idempotent.
+/// graphify platform id: explicit config, else env auto-detect (only Claude Code is reliably
+/// identifiable from the environment), else None.
+fn resolve_platform() -> Option<String> {
+    let a = crate::config::load().agent;
+    if !a.trim().is_empty() {
+        return Some(a.trim().to_string());
+    }
+    if std::env::var_os("CLAUDECODE").is_some() || std::env::var_os("CLAUDE_CODE_ENTRYPOINT").is_some()
+    {
+        return Some("claude".into());
+    }
+    None
+}
+
+/// Register the graphify skill for the agent in use (once, via the skill marker). Resolves the
+/// platform from config/env; if unknown, asks the user when interactive, otherwise leaves guidance.
+fn register_skill(py: &str, verbose: bool) {
+    if exists(data_file(".graphify-skill")) {
+        return;
+    }
+    let platform = match resolve_platform() {
+        Some(p) => p,
+        None => {
+            if std::io::stdin().is_terminal() {
+                match inquire::Text::new(
+                    "Which agent are you using? (graphify platform id like claude, codex, cursor; blank to skip)",
+                )
+                .prompt()
+                {
+                    Ok(s) if !s.trim().is_empty() => {
+                        let p = s.trim().to_string();
+                        let mut cfg = crate::config::load();
+                        cfg.agent = p.clone();
+                        let _ = crate::config::save(&cfg);
+                        p
+                    }
+                    _ => return,
+                }
+            } else {
+                if verbose {
+                    eprintln!("tokex: couldn't detect your agent — run `tokex setup` (or `tokex graph` in a terminal) to register the graphify skill for it.");
+                }
+                return;
+            }
+        }
+    };
+    if verbose {
+        eprintln!("tokex: registering graphify skill for '{platform}' …");
+    }
+    // graphify's CLI is inconsistent: some platforms use `--platform`, others a subcommand. Claude
+    // is the bare default. Try the most likely form, then fall back.
+    let ok = if platform == "claude" {
+        run_inherit(py, &["-m", "graphify", "install"])
+    } else {
+        run_inherit(py, &["-m", "graphify", "install", "--platform", &platform])
+            || run_inherit(py, &["-m", "graphify", &platform, "install"])
+    };
+    if ok {
+        touch(data_file(".graphify-skill"));
+    }
+}
+
+/// Best-effort refresh after a code-changing run — never blocks the run. If set up, fire a cheap
+/// incremental update in the background; if not, run the one-time bootstrap detached (via
+/// `tokex graph`) so install + skill-register + first build never stall the command.
+/// ponytail: no lock — a rare double-bootstrap is idempotent.
 pub fn auto_update(command: &str) {
     if !touches_code(command) {
         return;
     }
-    if marker().map(|m| m.exists()).unwrap_or(false) {
+    if exists(data_file(".graphify-ok")) {
         let _ = Command::new(py())
             .args(["-m", "graphify", "update", "."])
             .stdout(Stdio::null())
@@ -114,18 +184,15 @@ pub fn auto_update(command: &str) {
     }
 }
 
-/// `tokex graph`: blocking refresh with visible output; installs graphify if missing.
+/// `tokex graph` and the post-`setup` bootstrap: install the package, register the skill for the
+/// agent, and refresh the map. Blocking, with visible output.
 pub fn update_blocking() -> Result<(), String> {
     let py = py();
-    if !ensure(py, true) {
+    if !ensure_package(py, true) {
         return Err("graphify unavailable — need Python + pip to install graphifyy".into());
     }
-    let ok = Command::new(py)
-        .args(["-m", "graphify", "update", "."])
-        .status()
-        .map_err(|e| e.to_string())?
-        .success();
-    if ok {
+    register_skill(py, true);
+    if run_inherit(py, &["-m", "graphify", "update", "."]) {
         Ok(())
     } else {
         Err("graphify update failed".into())

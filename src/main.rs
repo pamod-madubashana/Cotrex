@@ -77,6 +77,12 @@ fn main() {
                 eprintln!("tokex: setup failed: {e}");
                 exit(1);
             }
+            // Bootstrap graphify (install + register skill for the chosen agent + build map) now.
+            if config::load().graph_auto {
+                if let Err(e) = graphify::update_blocking() {
+                    eprintln!("tokex: graphify setup skipped: {e}");
+                }
+            }
             return;
         }
         Some(Cmd::Mcp) => mcp::serve(),
