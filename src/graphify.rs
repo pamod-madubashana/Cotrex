@@ -101,7 +101,7 @@ fn ensure_package(py: &str, verbose: bool) -> bool {
 
 /// graphify platform id: explicit config, else env auto-detect (only Claude Code is reliably
 /// identifiable from the environment), else None.
-fn resolve_platform() -> Option<String> {
+pub fn current_agent() -> Option<String> {
     let a = crate::config::load().agent;
     if !a.trim().is_empty() {
         return Some(a.trim().to_string());
@@ -119,7 +119,7 @@ fn register_skill(py: &str, verbose: bool) {
     if exists(data_file(".graphify-skill")) {
         return;
     }
-    let platform = match resolve_platform() {
+    let platform = match current_agent() {
         Some(p) => p,
         None => {
             if std::io::stdin().is_terminal() {
@@ -175,12 +175,28 @@ pub fn auto_update(command: &str) {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
-    } else if let Ok(exe) = std::env::current_exe() {
+    } else {
+        bootstrap_detached();
+    }
+}
+
+/// Run the one-time bootstrap (`tokex graph`) detached, with no stdio — safe to call from MCP mode
+/// where stdout is the JSON-RPC channel.
+pub fn bootstrap_detached() {
+    if let Ok(exe) = std::env::current_exe() {
         let _ = Command::new(exe)
             .arg("graph")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
+    }
+}
+
+/// Forget that the skill was registered, so the next bootstrap re-registers (e.g. after the agent
+/// changes).
+pub fn clear_skill_marker() {
+    if let Some(m) = data_file(".graphify-skill") {
+        let _ = std::fs::remove_file(m);
     }
 }
 
