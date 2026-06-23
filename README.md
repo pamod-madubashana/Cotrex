@@ -124,8 +124,7 @@ tokex plan-stack "build a music player app"
 {
   "task": "build a music player app",
   "stack": "tauri",
-  "reason": "cross-platform desktop with Rust core + web UI; small binaries",
-  "init_commands": ["npm create tauri-app@latest"]
+  "reason": "cross-platform desktop with Rust core + web UI; small binaries"
 }
 ```
 
