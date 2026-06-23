@@ -127,14 +127,20 @@ A single quoted arg is a *prompt*, not a command. `prompt::classify` routes it:
   that category's header (`plan-stack`, `theme`, …). These aren't runnable commands.
 - a lone token → a command.
 
-**Execution of a chosen command** (`run_command` → `exec_capture`): commands are generated for the
-**native shell** — PowerShell on Windows, bash on Unix (the decision prompt is OS-specific) — and run
-by writing the command to a temp script (`.ps1`/`.sh`, with `$ErrorActionPreference='Stop'`/`set -e`
-so errors get a non-zero exit) and invoking the interpreter on it *by path* via rtk (raw). This
-avoids cmd.exe's pipe/quoting mangling and cross-shell mount mismatches. **Safe (read-only) commands
-run unprompted**; only a **risky** one (`is_risky`: delete/overwrite/install/push/network/sudo, POSIX
-*and* PowerShell cmdlets) is confirmed (default No). On failure the model gets the error and **fixes
-the command or answers** from it, up to `MAX_FIXES` (2).
+`fulfill` runs a **step loop** (`MAX_STEPS`): each turn the model replies `{"run":cmd}`,
+`{"run":cmd,"more":true}`, or `{"answer":text}`. A plain `run` that succeeds returns the **real
+output**; `more:true` runs the command, feeds the (capped) output back, and continues — so a big task
+is done incrementally (explore one level, skip vendor/target) instead of one mega-command; a failure
+is fed back to fix. Output is capped at `OUTPUT_CAP` lines (`cap_lines`) as a flood stop against a
+weak model's recurse-everything command.
+
+**Execution** (`exec_capture`): commands are generated for the **native shell** — PowerShell on
+Windows, bash on Unix (the decision prompt is OS-specific) — and run by writing the command to a temp
+script (`.ps1`/`.sh`, with `$ErrorActionPreference='Stop'`/`set -e` so errors get a non-zero exit)
+and invoking the interpreter on it *by path* via rtk (raw). This avoids cmd.exe's pipe/quoting
+mangling and cross-shell mount mismatches. **Safe (read-only) commands run unprompted**; only a
+**risky** one (`is_risky`: delete/overwrite/install/push/network/sudo, POSIX *and* PowerShell
+cmdlets) is confirmed (default No).
 
 Each **category** binds a name to a *header* in the `CATEGORIES` table — **add a category by adding a
 row**. Prompts require an LLM key.

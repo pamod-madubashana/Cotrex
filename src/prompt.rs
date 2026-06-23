@@ -53,13 +53,17 @@ question briefly and practically. No preamble, no markdown headings.";
 // A task either runs a command (and we return the REAL output) or is answered in text. The model
 // decides and replies with JSON: {"run":"<command>"} or {"answer":"<text>"}.
 const DECISION_SYSTEM: &str = "You fulfill a developer's request from their CURRENT working \
-directory. Decide how to respond:\n\
-- If running ONE shell command produces the real result (list/count/search files, git, build, \
-inspect, file ops), reply with EXACTLY {\"run\":\"<command>\"} — ONE simple, correct command; stay \
-within the current directory tree; never scan the whole filesystem or drive root; keep it minimal.\n\
-- Otherwise reply with EXACTLY {\"answer\":\"<text>\"}. In the answer, wrap any file tree, table, or \
-aligned/multi-line layout in a fenced ``` code block so it renders correctly in a terminal.\n\
-Output ONLY the JSON object — no extra text outside it.";
+directory, step by step. Each turn, reply with EXACTLY ONE JSON object:\n\
+- {\"run\":\"<command>\"} — run one command and return its output as the final result (use this when \
+the command's own output is the answer, e.g. a count or a branch name).\n\
+- {\"run\":\"<command>\",\"more\":true} — run one command, see its output, then continue. Use this to \
+explore step by step: inspect ONE level at a time, skip vendored/build dirs (vendor, target, \
+node_modules, .git, dist), and NEVER dump the whole recursive tree at once on a large project.\n\
+- {\"answer\":\"<text>\"} — give the final answer; wrap any file tree/table/aligned layout in a \
+fenced ``` code block so it renders in a terminal.\n\
+Use the fewest turns that do the job: one good filtered command is better than many. Only use \
+\"more\":true when you genuinely need to see a result before deciding the next step. ONE simple \
+correct command per turn; stay within the current directory tree. Output ONLY the JSON.";
 
 
 /// The header (system prompt) bound to a category, if it is known.
@@ -190,18 +194,56 @@ git); never PowerShell or cmd syntax."
         Some(h) => format!("{h}\n\n{DECISION_SYSTEM} {shell}"),
         None => format!("{DECISION_SYSTEM} {shell}"),
     };
-    let raw = one_call(cfg, &system, task, mode)?;
-    match parse_decision(&raw) {
-        Decision::Run(cmd) => run_command(&cmd, task, cfg, mode, opts),
-        Decision::Answer(text) => {
-            print_answer(&text, mode);
-            Ok(0)
+
+    // Step loop: the model runs a command, sees its (capped) output, and either keeps exploring
+    // (`more`) or answers — so a big task is done incrementally instead of one mega-command. A
+    // direct `run` (no `more`) that succeeds returns the real output; a failure is fed back to fix.
+    let mut transcript = String::new();
+    let mut last_code = 0;
+    for _ in 0..MAX_STEPS {
+        let user = if transcript.is_empty() {
+            task.to_string()
+        } else {
+            format!("Request: {task}\n\nSteps so far:\n{transcript}\nDecide the next step.")
+        };
+        match parse_decision(&one_call(cfg, &system, &user, mode)?) {
+            Decision::Answer(text) => {
+                print_answer(&text, mode);
+                return Ok(0);
+            }
+            Decision::Run { cmd, more } => {
+                if is_risky(&cmd) {
+                    if !confirm(&cmd) {
+                        let _ = writeln!(std::io::stderr(), "aborted (not confirmed).");
+                        return Ok(130); // 128 + SIGINT
+                    }
+                } else {
+                    let _ = writeln!(std::io::stderr(), "$ {cmd}"); // safe → show what runs
+                }
+                let (code, out) = exec_capture(&cmd, opts)?;
+                last_code = code;
+                if !more && code == 0 {
+                    print!("{out}"); // direct command whose output is the result
+                    return Ok(0);
+                }
+                // Exploring, or a failure to fix: feed the (capped) result back and continue.
+                transcript
+                    .push_str(&format!("$ {cmd}\n(exit {code})\n{}\n\n", trunc(&out, 1500)));
+            }
         }
     }
+    // Out of steps: ask for a final answer from what we've gathered.
+    let user = format!(
+        "Request: {task}\n\nSteps so far:\n{transcript}\nGive your final answer now as {{\"answer\":\"...\"}}."
+    );
+    if let Decision::Answer(text) = parse_decision(&one_call(cfg, &system, &user, mode)?) {
+        print_answer(&text, mode);
+    }
+    Ok(last_code)
 }
 
-// Up to this many model-driven fixes after a command fails before we give up and show the error.
-const MAX_FIXES: usize = 2;
+// Max model turns per task (exploration steps + fixes) before forcing a final answer.
+const MAX_STEPS: usize = 6;
 
 /// Print an answer to stdout. User mode renders markdown to ANSI (headers, lists, syntax-highlighted
 /// code blocks) so it reads in a terminal instead of showing raw ``` fences; Model mode prints the
@@ -222,19 +264,21 @@ fn print_answer(text: &str, mode: Mode) {
 }
 
 enum Decision {
-    Run(String),
+    /// Run a command; `more` = the model wants to see the output and keep going (exploration step).
+    Run { cmd: String, more: bool },
     Answer(String),
 }
 
-/// Read the model's JSON decision: `{"run":…}` → run a command, `{"answer":…}` → text. Anything that
-/// isn't our JSON is treated as a plain answer (graceful when a model ignores the format).
+/// Read the model's JSON decision: `{"run":…[, "more":true]}` → run a command, `{"answer":…}` →
+/// text. Anything that isn't our JSON is treated as a plain answer (graceful when a model strays).
 fn parse_decision(content: &str) -> Decision {
     if let (Some(a), Some(b)) = (content.find('{'), content.rfind('}')) {
         if a < b {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content[a..=b]) {
                 if let Some(cmd) = v.get("run").and_then(|x| x.as_str()) {
                     if !cmd.trim().is_empty() {
-                        return Decision::Run(cmd.trim().to_string());
+                        let more = v.get("more").and_then(|x| x.as_bool()).unwrap_or(false);
+                        return Decision::Run { cmd: cmd.trim().to_string(), more };
                     }
                 }
                 if let Some(ans) = v.get("answer").and_then(|x| x.as_str()) {
@@ -244,71 +288,6 @@ fn parse_decision(content: &str) -> Decision {
         }
     }
     Decision::Answer(content.trim().to_string())
-}
-
-/// Run a command and return its exit code, fixing it via the model on failure (up to `MAX_FIXES`).
-/// Safe (read-only) commands run without asking; a risky one is confirmed first. On final success
-/// the real output is printed to stdout; if every attempt fails, the model answers from the error.
-fn run_command(
-    cmd: &str,
-    task: &str,
-    cfg: &LlmConfig,
-    mode: Mode,
-    opts: &Options,
-) -> Result<i32, String> {
-    let mut cmd = cmd.to_string();
-    for attempt in 0..=MAX_FIXES {
-        if is_risky(&cmd) {
-            // A destructive/system-changing command earns a checkpoint; default No.
-            if !confirm(&cmd) {
-                let _ = writeln!(std::io::stderr(), "aborted (not confirmed).");
-                return Ok(130); // 128 + SIGINT
-            }
-        } else {
-            let _ = writeln!(std::io::stderr(), "$ {cmd}"); // safe → just show what runs
-        }
-
-        let (code, output) = exec_capture(&cmd, opts)?;
-        if code == 0 {
-            print!("{output}");
-            return Ok(0);
-        }
-        if attempt == MAX_FIXES {
-            // Out of fixes: let the model turn the error into a useful answer instead of raw failure.
-            let answer = fix_or_answer(cfg, task, &cmd, &output, mode)?;
-            match answer {
-                Decision::Answer(a) => print_answer(&a, mode),
-                Decision::Run(_) => print!("{output}"), // still wants to run; just show the error
-            }
-            return Ok(code);
-        }
-        // Failed but fixes remain: feed the error back and try the model's next move.
-        match fix_or_answer(cfg, task, &cmd, &output, mode)? {
-            Decision::Run(next) => cmd = next,
-            Decision::Answer(a) => {
-                print_answer(&a, mode);
-                return Ok(0);
-            }
-        }
-    }
-    unreachable!()
-}
-
-/// Ask the model to fix a failed command (→ `Run`) or, if it can't, answer the task from the error
-/// (→ `Answer`). Streamed/quiet per mode like any other call.
-fn fix_or_answer(
-    cfg: &LlmConfig,
-    task: &str,
-    cmd: &str,
-    error: &str,
-    mode: Mode,
-) -> Result<Decision, String> {
-    let system = "A shell command you proposed failed. Either fix it or answer the user's request \
-from the error. Reply with EXACTLY {\"run\":\"<corrected command>\"} if a different command would \
-work (POSIX bash, one line), otherwise {\"answer\":\"<answer>\"}. Output ONLY the JSON.";
-    let user =
-        format!("Request: {task}\nFailed command: {cmd}\nError output:\n{}", trunc(error, 1500));
-    Ok(parse_decision(&one_call(cfg, system, &user, mode)?))
 }
 
 /// Run `cmd` via rtk and capture its combined output. Generated commands target the native shell —
@@ -335,7 +314,26 @@ fn exec_capture(cmd: &str, opts: &Options) -> Result<(i32, String), String> {
     let result = orchestrate::run(&Intent::from_command(run_line), &mut buf, &mut std::io::sink(), None, &exec);
     let _ = std::fs::remove_file(&tmp);
     let code = result?;
-    Ok((code, String::from_utf8_lossy(&buf).into_owned()))
+    Ok((code, cap_lines(&String::from_utf8_lossy(&buf), OUTPUT_CAP)))
+}
+
+/// Flood stop: a weak model sometimes emits a recurse-everything command (10k+ lines). Keep the
+/// first `OUTPUT_CAP` lines so a bad command can't bury the terminal/context; normal output (well
+/// under the cap) is untouched.
+const OUTPUT_CAP: usize = 500;
+
+fn cap_lines(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for (i, line) in s.lines().enumerate() {
+        if i >= max {
+            let extra = s.lines().count() - max;
+            out.push_str(&format!("… ({extra} more lines truncated — narrow the command)\n"));
+            break;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
 /// A command is risky (→ confirm) if it can delete, overwrite, fetch+run, escalate, or mutate the
@@ -575,8 +573,15 @@ mod tests {
     #[test]
     fn parse_decision_run_answer_and_fallback() {
         match parse_decision(r#"{"run":"find . -name Cargo.toml | wc -l"}"#) {
-            Decision::Run(c) => assert_eq!(c, "find . -name Cargo.toml | wc -l"),
+            Decision::Run { cmd, more } => {
+                assert_eq!(cmd, "find . -name Cargo.toml | wc -l");
+                assert!(!more);
+            }
             _ => panic!("expected Run"),
+        }
+        match parse_decision(r#"{"run":"ls","more":true}"#) {
+            Decision::Run { more, .. } => assert!(more),
+            _ => panic!("expected Run with more"),
         }
         match parse_decision(r#"here you go: {"answer":"the ? operator propagates errors"}"#) {
             Decision::Answer(a) => assert_eq!(a, "the ? operator propagates errors"),
