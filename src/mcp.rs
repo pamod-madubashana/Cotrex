@@ -90,15 +90,58 @@ events (stdout/stderr lines with severity, a result with exit code, and an optio
             },
             "required": ["command"],
         },
+    }, {
+        "name": "set_agent",
+        "description": "Tell tokex which AI agent you are so it can install the graphify code-map \
+skill for the right platform. Call this once with your platform id if a run result says the agent \
+is unknown.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent": {"type": "string", "description": "graphify platform id, e.g. claude, codex, cursor, gemini, opencode"},
+            },
+            "required": ["agent"],
+        },
     }]})
 }
 
-/// Execute the `run` tool via the shared core, returning MCP tool-result content.
+/// Dispatch a tools/call to the right handler.
 fn tools_call(params: &Value, cfg: &Config) -> Value {
-    let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-    if name != "run" {
-        return tool_error(format!("unknown tool: {name}"));
+    match params.get("name").and_then(Value::as_str).unwrap_or("") {
+        "run" => tool_run(params, cfg),
+        "set_agent" => tool_set_agent(params),
+        other => tool_error(format!("unknown tool: {other}")),
     }
+}
+
+/// `set_agent`: the model tells tokex its own platform (no TTY needed). Persists it and kicks off
+/// the graphify skill install in the background — never writes to stdout (the JSON-RPC channel).
+fn tool_set_agent(params: &Value) -> Value {
+    let agent = params
+        .get("arguments")
+        .and_then(|a| a.get("agent"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if agent.is_empty() {
+        return tool_error("missing required argument 'agent'".into());
+    }
+    let mut cfg = crate::config::load();
+    cfg.agent = agent.clone();
+    if let Err(e) = crate::config::save(&cfg) {
+        return tool_error(format!("could not save config: {e}"));
+    }
+    crate::graphify::clear_skill_marker();
+    crate::graphify::bootstrap_detached();
+    json!({
+        "content": [{"type": "text", "text": format!("Agent set to '{agent}'. Installing the graphify skill for it in the background.")}],
+        "isError": false,
+    })
+}
+
+/// Execute the `run` tool via the shared core, returning MCP tool-result content.
+fn tool_run(params: &Value, cfg: &Config) -> Value {
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     let command = args.get("command").and_then(Value::as_str).unwrap_or("").trim().to_string();
     if command.is_empty() {
@@ -128,7 +171,13 @@ fn tools_call(params: &Value, cfg: &Config) -> Value {
                 .filter_map(|l| serde_json::from_str::<Value>(l).ok())
                 .collect();
             let text = serde_json::to_string_pretty(&json!({"events": events})).unwrap();
-            json!({"content": [{"type": "text", "text": text}], "isError": code != 0})
+            let mut content = vec![json!({"type": "text", "text": text})];
+            // If we can't tell which agent this is, ask the model to identify itself so the graphify
+            // code-map skill can be installed for the right platform.
+            if cfg.graph_auto && crate::graphify::current_agent().is_none() {
+                content.push(json!({"type": "text", "text": "note: tokex couldn't detect your agent, so the graphify code-map skill isn't installed. Call the set_agent tool with your platform id (e.g. claude, codex, cursor, gemini) to enable it."}));
+            }
+            json!({"content": content, "isError": code != 0})
         }
         Err(e) => tool_error(e),
     }
@@ -153,6 +202,20 @@ mod tests {
     fn tools_list_exposes_run() {
         let r = dispatch("tools/list", &json!({}), &Config::default()).unwrap().unwrap();
         assert_eq!(r["tools"][0]["name"], "run");
+    }
+
+    #[test]
+    fn tools_list_exposes_set_agent() {
+        let r = dispatch("tools/list", &json!({}), &Config::default()).unwrap().unwrap();
+        let names: Vec<&str> =
+            r["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"set_agent"));
+    }
+
+    #[test]
+    fn set_agent_requires_agent() {
+        let r = tools_call(&json!({"name": "set_agent", "arguments": {}}), &Config::default());
+        assert_eq!(r["isError"], true);
     }
 
     #[test]
