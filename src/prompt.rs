@@ -62,6 +62,57 @@ pub fn header(category: &str) -> Option<&'static str> {
     CATEGORIES.iter().find(|(n, _)| *n == category).map(|(_, h)| *h)
 }
 
+// Roles: `tokex <role> "<task>"` offloads a small task to a role-specific model and returns its
+// answer, so the calling agent just waits (and spends no tokens thinking). Each row is
+// (role, model id, header). The model ids are NVIDIA NIM ids served by the configured endpoint;
+// add or retune a role by editing a row.
+const ROLES: &[(&str, &str, &str)] = &[
+    (
+        "planner",
+        "z-ai/glm-5.1",
+        "You are a planning specialist. Given a goal, produce a concise, ordered, actionable plan as \
+numbered steps. No preamble, no code unless essential.",
+    ),
+    (
+        "router",
+        "nvidia/nemotron-3-nano-30b-a3b",
+        "You are a router. Given a request, decide the single best next action, tool, or role and \
+answer in one or two decisive lines. No deliberation in the output.",
+    ),
+    (
+        "orchestrator",
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "You are an orchestrator. Break the goal into an ordered list of concrete shell commands or \
+steps that accomplish it end to end. Be specific and minimal. No prose beyond the steps.",
+    ),
+    (
+        "coder",
+        "deepseek-ai/deepseek-v4-flash",
+        "You are a senior engineer. Output only the code that solves the task — correct, minimal, \
+idiomatic. No explanation unless the task asks for it.",
+    ),
+    (
+        "assistant",
+        "qwen/qwen3-next-80b-a3b-instruct",
+        "You are a concise developer assistant. Answer the request briefly and practically. No fluff.",
+    ),
+];
+
+/// `(model id, header)` for a role, if known.
+pub fn role(name: &str) -> Option<(&'static str, &'static str)> {
+    ROLES.iter().find(|(n, _, _)| *n == name).map(|(_, m, h)| (*m, *h))
+}
+
+/// Offload a task to a role's model and return its answer. Same endpoint/key as the configured LLM,
+/// but the role's model and header. Roles return text (a plan, code, an answer) — they don't run
+/// commands, so there's no confirmation step. User mode streams thinking to stderr; Model mode is
+/// silent. The answer goes to stdout via the caller.
+pub fn run_role(name: &str, task: &str, base: &LlmConfig, mode: Mode) -> Result<String, String> {
+    let (model, header) = role(name).ok_or_else(|| format!("unknown role '{name}'"))?;
+    let cfg = LlmConfig { url: base.url.clone(), key: base.key.clone(), model: model.to_string() };
+    Ok(one_call(&cfg, header, task, mode)?.trim().to_string())
+}
+
 /// How a single bare argument should be handled.
 #[derive(Debug, PartialEq)]
 pub enum Dispatch {
@@ -381,5 +432,14 @@ mod tests {
         assert!(header("plan-stack").is_some());
         assert!(header("theme").is_some());
         assert!(header("nope").is_none());
+    }
+
+    #[test]
+    fn roles_map_to_models() {
+        assert_eq!(role("planner").unwrap().0, "z-ai/glm-5.1");
+        assert_eq!(role("orchestrator").unwrap().0, "nvidia/nemotron-3-ultra-550b-a55b");
+        assert!(role("coder").is_some());
+        assert!(role("assistant").is_some());
+        assert!(role("nope").is_none());
     }
 }

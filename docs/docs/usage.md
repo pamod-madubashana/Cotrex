@@ -76,6 +76,22 @@ Two modes: `tokex "…"` (User) shows a spinner then streams the model's thinkin
 "…"` (Model, for agents) shows neither — just the output on stdout. Add a category by adding a row to
 `CATEGORIES` in `prompt.rs`.
 
+## Roles (offload to a role-specific model)
+
+`tokex <role> "<task>"` hands a small task to a model chosen for that role and returns its answer —
+the calling agent just waits, spending no tokens thinking. Roles return text (a plan, code, an
+answer); nothing runs, so there's no confirmation.
+
+```bash
+tokex planner "release this crate to crates.io"     # glm
+tokex coder "a Rust fn that reverses a string"      # deepseek
+tokex assistant "what does the ? operator do?"      # qwen
+# also: router (nemotron-nano), orchestrator (nemotron-ultra)
+```
+
+Roles share your configured endpoint + key, swapping in the role's model id. Add or retune a role by
+editing the `ROLES` table in `prompt.rs`.
+
 ## Scripting (repetitive or multi-file changes)
 
 Don't edit many files by hand for the same change. Write one idempotent script under `Scripts/`,

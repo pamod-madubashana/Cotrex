@@ -65,29 +65,35 @@ const SUBCOMMANDS: &[&str] = &["run", "script", "setup", "mcp", "install-rtk", "
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // Model mode: `tokex -m "<prompt>"` — output only, no spinner/thinking (for agents).
-    if matches!(args.get(1).map(String::as_str), Some("-m") | Some("--model")) {
-        let prompt = args[2..].join(" ");
-        if prompt.trim().is_empty() {
-            eprintln!("tokex: -m needs a prompt, e.g. tokex -m \"list rust projects\"");
+    // `-m` / `--model` selects Model mode (output only, for agents); default is User mode
+    // (spinner + live-streamed thinking, for humans). The rest of argv follows.
+    let model_mode = matches!(args.get(1).map(String::as_str), Some("-m") | Some("--model"));
+    let rest: &[String] = if model_mode { &args[2..] } else { &args[1..] };
+    let mode = if model_mode { prompt::Mode::Model } else { prompt::Mode::User };
+
+    if let Some(first) = rest.first() {
+        // Role: `tokex <role> "<task>"` — offload a task to a role's model, return its answer.
+        if prompt::role(first).is_some() {
+            run_role(first, rest[1..].join(" ").trim(), mode);
+        }
+        // Otherwise, when the first arg isn't a subcommand/flag:
+        //   several args -> a command (`tokex git status`), run through rtk
+        //   one arg      -> a prompt (`tokex "list all rust projects"`, see prompt::classify)
+        if is_passthrough(first) {
+            if rest.len() >= 2 {
+                run_intent(Intent::from_command(rest.join(" ")));
+            } else {
+                dispatch_one(&rest[0], mode);
+            }
+            return;
+        }
+        if model_mode {
+            eprintln!("tokex: -m takes a prompt or role, not '{first}'");
             exit(2);
         }
-        dispatch_one(&prompt, prompt::Mode::Model);
-        return;
-    }
-
-    // Two bare forms when the first arg isn't a subcommand/flag (User mode):
-    //   tokex git status                     -> several args -> a command, run through rtk
-    //   tokex "list all rust projects"       -> one arg      -> a prompt (see prompt::classify)
-    // Quoting is the signal: a quoted string is one arg, so `tokex "git status"` is a prompt.
-    if args.get(1).is_some_and(|f| is_passthrough(f)) {
-        let rest = &args[1..];
-        if rest.len() >= 2 {
-            run_intent(Intent::from_command(rest.join(" ")));
-        } else {
-            dispatch_one(&rest[0], prompt::Mode::User);
-        }
-        return;
+    } else if model_mode {
+        eprintln!("tokex: -m needs a prompt or role, e.g. tokex -m \"list rust projects\"");
+        exit(2);
     }
 
     let cli = Cli::parse();
@@ -266,6 +272,27 @@ fn exec_opts(cfg: &config::Config) -> orchestrate::Options {
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
         llm_on_failure: false,
         footer: true,
+    }
+}
+
+/// Role: offload a task to a role-specific model and print its answer. No command runs, so no
+/// confirmation — roles return text (a plan, code, an answer).
+fn run_role(role: &str, task: &str, mode: prompt::Mode) -> ! {
+    if task.is_empty() {
+        eprintln!("tokex: role '{role}' needs a task, e.g. tokex {role} \"...\"");
+        exit(2);
+    }
+    let cfg = config::load();
+    let base = load_llm_or_exit(&cfg);
+    match prompt::run_role(role, task, &base, mode) {
+        Ok(answer) => {
+            println!("{answer}");
+            exit(0);
+        }
+        Err(e) => {
+            eprintln!("tokex: {e}");
+            exit(1);
+        }
     }
 }
 

@@ -130,6 +130,13 @@ A single quoted arg is a *prompt*, not a command. `prompt::classify` routes it:
 Each **category** binds a name to a *header* (system prompt) in the `CATEGORIES` table — **add a
 category by adding a row**. Prompts require an LLM key.
 
+**Roles** (`tokex <role> "<task>"`, e.g. `tokex planner "…"`, `tokex coder "…"`) offload a small
+task to a **role-specific model** and return its answer, so the calling agent just waits and spends
+no tokens thinking. The `ROLES` table binds each role to `(model id, header)` — `planner` (glm),
+`router`/`orchestrator` (nemotron nano/ultra), `coder` (deepseek), `assistant` (qwen). Same endpoint
++ key as the configured LLM, role's model id swapped in. Roles **return text** (a plan, code, an
+answer) — they don't run commands, so no confirmation. A role wins dispatch when it's the first arg.
+
 Two modes (`prompt::Mode`): **User** (default) shows a stderr spinner until the first token then
 streams the model's thinking live; **Model** (`tokex -m "…"`, for agents) shows neither — just the
 output on stdout (task exec runs with `footer:false`, human channel suppressed).

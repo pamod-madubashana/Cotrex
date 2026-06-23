@@ -148,6 +148,20 @@ Run this command? [y/N] y
 { "plan-stack": { "stack": "tauri", "reason": "cross-platform desktop; small binaries" } }
 ```
 
+**Roles (offload a task to a role-specific model).** `tokex <role> "<task>"` hands a small task to a
+model picked for that role and returns its answer — the calling agent just waits, spending no tokens
+thinking. Roles return text (a plan, code, an answer); nothing runs, so there's no confirmation.
+
+```bash
+tokex planner "release this crate to crates.io"     # glm
+tokex coder "a Rust fn that reverses a string"      # deepseek
+tokex assistant "what does the ? operator do?"      # qwen
+# also: router (nemotron-nano), orchestrator (nemotron-ultra)
+```
+
+Roles share your configured endpoint + key (NVIDIA NIM), swapping in the role's model id. Add or
+retune a role by editing the `ROLES` table in `src/prompt.rs`.
+
 Failing commands set `status: "failed"` in the footer and propagate the underlying exit code; in
 `llm` mode a failure also gets an `insight` line (a successful command stays token-free).
 
