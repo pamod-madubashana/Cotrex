@@ -55,22 +55,42 @@ the exit code. Requires a key from [Setup](setup).
 
 ## Prompts & categories
 
-A single quoted arg is a *prompt*, not a command. `category: text` uses that category's header
-(system prompt); free text uses a default header; a JSON object runs several categories at once. The
-model streams its thinking to stderr while you wait; the answer is JSON on stdout. Requires a key
-from [Setup](setup).
+A single quoted arg is a *prompt*, not a command. **Free text is a task: the model turns it into one
+shell command, tokex shows it, asks you to confirm, then runs it and returns the output** — not the
+command. `category: text` (or a JSON object of several) instead returns a structured answer. Requires
+a key from [Setup](setup). The confirmation is default-No and applies in both modes (a free model can
+emit a wrong/destructive command); `-m` reads the yes from stdin, and no input aborts.
 
 ```bash
-tokex "plan-stack: build a music player app"
+tokex "list all rust projects in the current dir"     # task → command, run, output
+tokex "plan-stack: build a music player app"          # category → structured answer
 tokex '{"plan-stack":"music player","theme":"glassy"}'
-tokex "find a python lib for web scraping"
 ```
 
 ```json
+// tokex "plan-stack: …"
 { "plan-stack": { "stack": "tauri", "reason": "…" } }
 ```
 
-Add a category by adding a row to `CATEGORIES` in `prompt.rs`.
+Two modes: `tokex "…"` (User) shows a spinner then streams the model's thinking to stderr; `tokex -m
+"…"` (Model, for agents) shows neither — just the output on stdout. Add a category by adding a row to
+`CATEGORIES` in `prompt.rs`.
+
+## Roles (offload to a role-specific model)
+
+`tokex <role> "<task>"` hands a small task to a model chosen for that role and returns its answer —
+the calling agent just waits, spending no tokens thinking. Roles return text (a plan, code, an
+answer); nothing runs, so there's no confirmation.
+
+```bash
+tokex planner "release this crate to crates.io"     # glm
+tokex coder "a Rust fn that reverses a string"      # deepseek
+tokex assistant "what does the ? operator do?"      # qwen
+# also: router (nemotron-nano), orchestrator (nemotron-ultra)
+```
+
+Roles share your configured endpoint + key, swapping in the role's model id. Add or retune a role by
+editing the `ROLES` table in `prompt.rs`.
 
 ## Scripting (repetitive or multi-file changes)
 

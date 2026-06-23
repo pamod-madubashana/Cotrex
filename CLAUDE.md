@@ -57,8 +57,10 @@ the raw command it's meant to compress, so don't. The human-readable summary goe
 Keep these separated by file descriptor — never mix human text into stdout.
 
 `main.rs` is dispatch only. With a first arg that isn't a subcommand: several args = a command
-(`tokex git status`), a single (quoted) arg = a prompt (`tokex "plan-stack: …"`, see `prompt.rs`).
-Otherwise a subcommand (`run`/`setup`/`mcp`/…) or, with no subcommand and piped stdin, a JSON intent.
+(`tokex git status`), a single (quoted) arg = a prompt (`tokex "list rust projects"`, see
+`prompt.rs`). `tokex -m "…"` is the same prompt in **Model mode** (output only, for agents) vs the
+default **User mode** (spinner + live-streamed thinking, for humans). Otherwise a subcommand
+(`run`/`script`/`setup`/`mcp`/…) or, with no subcommand and piped stdin, a JSON intent.
 
 **Front-ends share the core.** CLI, stdin-JSON, and the MCP server (`mcp.rs`, `tokex mcp`) all funnel
 into the same `orchestrate::run`. MCP is a hand-rolled JSON-RPC 2.0 stdio server (sync, no tokio)
@@ -115,11 +117,29 @@ blocking refresh. All best-effort — never blocks or fails a tokex run. Gated b
 
 ## Prompts & categories (`prompt.rs`)
 
-A single quoted arg is a *prompt*, not a command. `prompt::classify` routes it: JSON object →
-several `category: text` pairs; `<known-category>: text` → that category; other free text → a
-default-header prompt; a lone token → a command. Each **category** binds a name to a *header*
-(system prompt) in the `CATEGORIES` table — **add a category by adding a row**, nothing else.
-Prompts stream (thinking on stderr, answer JSON on stdout) and require an LLM key.
+A single quoted arg is a *prompt*, not a command. `prompt::classify` routes it:
+- **free text → a task** (`Prompt`): the model turns it into ONE shell command, tokex shows it and
+  **requires confirmation** (default No, both modes — a free model can emit a wrong/destructive
+  command), then **runs it through rtk** and returns the command's *output* — not the command. This
+  is the headline path (`tokex "list all rust projects"`). The command runs via `rtk run -c` (raw)
+  so pipes work. `-m` reads the yes from stdin; no input = abort.
+- `<known-category>: text` (`Category`) or a JSON object (`Json`) → a **structured answer** using
+  that category's header (`plan-stack`, `theme`, …). These aren't runnable commands.
+- a lone token → a command.
+
+Each **category** binds a name to a *header* (system prompt) in the `CATEGORIES` table — **add a
+category by adding a row**. Prompts require an LLM key.
+
+**Roles** (`tokex <role> "<task>"`, e.g. `tokex planner "…"`, `tokex coder "…"`) offload a small
+task to a **role-specific model** and return its answer, so the calling agent just waits and spends
+no tokens thinking. The `ROLES` table binds each role to `(model id, header)` — `planner` (glm),
+`router`/`orchestrator` (nemotron nano/ultra), `coder` (deepseek), `assistant` (qwen). Same endpoint
++ key as the configured LLM, role's model id swapped in. Roles **return text** (a plan, code, an
+answer) — they don't run commands, so no confirmation. A role wins dispatch when it's the first arg.
+
+Two modes (`prompt::Mode`): **User** (default) shows a stderr spinner until the first token then
+streams the model's thinking live; **Model** (`tokex -m "…"`, for agents) shows neither — just the
+output on stdout (task exec runs with `footer:false`, human channel suppressed).
 
 ## Scripting (`script.rs`)
 

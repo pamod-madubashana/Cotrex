@@ -1,16 +1,34 @@
-//! Category-driven prompts.
+//! Prompts.
 //!
-//! A single quoted argument is a *prompt*, not a command: `tokex "plan-stack: media player"`.
-//! The part before the colon is a **category**; each category binds to a *header* (a system prompt)
-//! that's prepended to the agent's text. With no known category the text is sent under a default
-//! header. Several categories at once go through JSON: `tokex '{"plan-stack":"…","theme":"…"}'`.
+//! A single quoted argument is a *prompt*, not a command. Free text is a **task**: the model turns
+//! it into one shell command and tokex *runs* it, returning the command's output (not the command).
+//! `category: text` (or a JSON object of several) instead returns a structured answer using that
+//! category's header — those aren't runnable commands.
 //!
-//! Every call is streamed so the model's thinking shows live on stderr while the user waits; stdout
-//! stays machine-clean for the final JSON answer.
+//! Two presentation modes:
+//! - **User** (`tokex "…"`): a spinner while waiting, then the model's text streamed live to stderr.
+//! - **Model** (`tokex -m "…"`): no spinner, no thinking — just the output on stdout.
+//!
+//! Every call is streamed; the LLM key comes from config.
 
 use std::io::{BufRead, BufReader, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
+use crate::intent::Intent;
 use crate::llm::LlmConfig;
+use crate::orchestrate::{self, Options};
+
+/// Who's reading the output.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Mode {
+    /// A human: spinner + live-streamed generation.
+    User,
+    /// Another model/agent: output only, no thinking or chatter.
+    Model,
+}
 
 // Each row binds a category to its header (system prompt). Add a row to add a category.
 const CATEGORIES: &[(&str, &str)] = &[
@@ -28,13 +46,71 @@ rationale (one concise sentence). No code, no markdown, no other fields.",
     ),
 ];
 
-// Used when a prompt has no recognized category.
+// Used when a category prompt has no recognized category (rare: a JSON object with an empty key).
 const DEFAULT_HEADER: &str = "You are a concise senior software engineer. Answer the developer's \
 question briefly and practically. No preamble, no markdown headings.";
+
+// Free-text tasks: turn the request into ONE shell command that tokex then runs.
+const TASK_SYSTEM: &str = "Convert the user's request into ONE shell command that accomplishes it in \
+the CURRENT working directory. Stay within the current directory tree unless the request explicitly \
+names another path — never scan the whole filesystem or the drive root. Prefer portable POSIX tools \
+and read-only commands for queries. Output ONLY the command on a single line — no explanation, no \
+markdown, no code fences.";
 
 /// The header (system prompt) bound to a category, if it is known.
 pub fn header(category: &str) -> Option<&'static str> {
     CATEGORIES.iter().find(|(n, _)| *n == category).map(|(_, h)| *h)
+}
+
+// Roles: `tokex <role> "<task>"` offloads a small task to a role-specific model and returns its
+// answer, so the calling agent just waits (and spends no tokens thinking). Each row is
+// (role, model id, header). The model ids are NVIDIA NIM ids served by the configured endpoint;
+// add or retune a role by editing a row.
+const ROLES: &[(&str, &str, &str)] = &[
+    (
+        "planner",
+        "z-ai/glm-5.1",
+        "You are a planning specialist. Given a goal, produce a concise, ordered, actionable plan as \
+numbered steps. No preamble, no code unless essential.",
+    ),
+    (
+        "router",
+        "nvidia/nemotron-3-nano-30b-a3b",
+        "You are a router. Given a request, decide the single best next action, tool, or role and \
+answer in one or two decisive lines. No deliberation in the output.",
+    ),
+    (
+        "orchestrator",
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "You are an orchestrator. Break the goal into an ordered list of concrete shell commands or \
+steps that accomplish it end to end. Be specific and minimal. No prose beyond the steps.",
+    ),
+    (
+        "coder",
+        "deepseek-ai/deepseek-v4-flash",
+        "You are a senior engineer. Output only the code that solves the task — correct, minimal, \
+idiomatic. No explanation unless the task asks for it.",
+    ),
+    (
+        "assistant",
+        "qwen/qwen3-next-80b-a3b-instruct",
+        "You are a concise developer assistant. Answer the request briefly and practically. No fluff.",
+    ),
+];
+
+/// `(model id, header)` for a role, if known.
+pub fn role(name: &str) -> Option<(&'static str, &'static str)> {
+    ROLES.iter().find(|(n, _, _)| *n == name).map(|(_, m, h)| (*m, *h))
+}
+
+/// Offload a task to a role's model and return its answer. Same endpoint/key as the configured LLM,
+/// but the role's model and header. Roles return text (a plan, code, an answer) — they don't run
+/// commands, so there's no confirmation step. User mode streams thinking to stderr; Model mode is
+/// silent. The answer goes to stdout via the caller.
+pub fn run_role(name: &str, task: &str, base: &LlmConfig, mode: Mode) -> Result<String, String> {
+    let (model, header) = role(name).ok_or_else(|| format!("unknown role '{name}'"))?;
+    let cfg = LlmConfig { url: base.url.clone(), key: base.key.clone(), model: model.to_string() };
+    Ok(one_call(&cfg, header, task, mode)?.trim().to_string())
 }
 
 /// How a single bare argument should be handled.
@@ -42,9 +118,9 @@ pub fn header(category: &str) -> Option<&'static str> {
 pub enum Dispatch {
     /// JSON object of `category -> text` (possibly several). Pass the raw string to `parse_json`.
     Json(String),
-    /// `category: text` with a known category.
+    /// `category: text` with a known category — returns a structured answer.
     Category(String, String),
-    /// Free-text prompt with no category.
+    /// Free-text task — the model produces a command and tokex runs it.
     Prompt(String),
     /// A single bare token — run it as a command, not a prompt.
     Command(String),
@@ -62,7 +138,7 @@ pub fn classify(arg: &str) -> Dispatch {
             return Dispatch::Category(cat.trim().to_string(), rest.trim().to_string());
         }
     }
-    // Whitespace means it reads as a sentence → a prompt; a lone token is a command (e.g. `ls`).
+    // Whitespace means it reads as a sentence → a task; a lone token is a command (e.g. `ls`).
     if s.split_whitespace().count() > 1 {
         Dispatch::Prompt(s.to_string())
     } else {
@@ -89,9 +165,85 @@ pub fn parse_json(s: &str) -> Result<Vec<(String, String)>, String> {
     Ok(pairs)
 }
 
-/// Run every `(category, text)` pair through the LLM and collect the answers into one JSON object
-/// keyed by category (`answer` when there's no category). Streams thinking to stderr as it goes.
-pub fn run(pairs: &[(String, String)], cfg: &LlmConfig) -> Result<serde_json::Value, String> {
+/// Turn a free-text task into a command, run it through rtk, and return the exit code. The output
+/// is the command's output: live on stdout for User mode, captured-and-printed for Model mode.
+pub fn run_task(cfg: &LlmConfig, task: &str, mode: Mode, opts: &Options) -> Result<i32, String> {
+    let cmd = gen_command(cfg, task, mode)?;
+    // A free model can emit a wrong or destructive command (it once tried to scan all of C:\).
+    // Always show it and require an explicit yes before running — in both modes. No TTY / no `y`
+    // on stdin = abort, never run.
+    if !confirm(&cmd) {
+        let _ = writeln!(std::io::stderr(), "aborted (not confirmed).");
+        return Ok(130); // 128 + SIGINT, the "cancelled by user" convention
+    }
+    let intent = Intent::from_command(&cmd);
+    // Generated commands are arbitrary shell (pipes, redirects), so run via `rtk run -c` (raw),
+    // not the per-tool native filter which would split `find … | wc -l` and break the pipe.
+    // No LLM insight on the run itself — the caller asked for output, not analysis.
+    let exec = Options { raw: true, footer: false, llm_on_failure: false, ..*opts };
+    match mode {
+        // Output only either way; User additionally sees rtk's human summary on stderr.
+        Mode::User => {
+            orchestrate::run(&intent, &mut std::io::stdout(), &mut std::io::stderr(), None, &exec)
+        }
+        Mode::Model => {
+            orchestrate::run(&intent, &mut std::io::stdout(), &mut std::io::sink(), None, &exec)
+        }
+    }
+}
+
+/// Show the generated command and require an explicit yes from stdin before running it. Default No:
+/// an empty line, EOF (no TTY / no input piped), or read error all decline.
+fn confirm(cmd: &str) -> bool {
+    let mut err = std::io::stderr();
+    let _ = writeln!(err, "$ {cmd}");
+    let _ = write!(err, "Run this command? [y/N] ");
+    let _ = err.flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+        return false; // EOF / no input
+    }
+    is_yes(&line)
+}
+
+fn is_yes(s: &str) -> bool {
+    matches!(s.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+fn gen_command(cfg: &LlmConfig, task: &str, mode: Mode) -> Result<String, String> {
+    let system = format!("{TASK_SYSTEM} Target OS: {}.", std::env::consts::OS);
+    let answer = one_call(cfg, &system, task, mode)?;
+    let cmd = extract_command(&answer);
+    if cmd.is_empty() {
+        return Err("model returned no command".into());
+    }
+    Ok(cmd)
+}
+
+/// Pull a single command line out of the model's answer, tolerating ``` fences or a JSON wrapper.
+fn extract_command(text: &str) -> String {
+    let mut t = text.trim();
+    if let Some(rest) = t.strip_prefix("```") {
+        // drop an optional language tag, then the trailing fence
+        let rest = rest.trim_start_matches(|c: char| c.is_alphanumeric()).trim();
+        t = rest.strip_suffix("```").unwrap_or(rest).trim();
+    }
+    if t.starts_with('{') {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
+            for k in ["command", "cmd", "answer"] {
+                if let Some(c) = v.get(k).and_then(|x| x.as_str()) {
+                    return c.trim().to_string();
+                }
+            }
+        }
+    }
+    // ponytail: first non-empty line; multi-line commands (heredocs) lose their tail — fix if needed.
+    t.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").to_string()
+}
+
+/// Run category prompts and collect the answers into one JSON object keyed by category (`answer`
+/// when there's no category). Used for structured categories, not runnable tasks.
+pub fn run(pairs: &[(String, String)], cfg: &LlmConfig, mode: Mode) -> Result<serde_json::Value, String> {
     let mut results = serde_json::Map::new();
     for (cat, text) in pairs {
         let system = if cat.is_empty() {
@@ -99,7 +251,7 @@ pub fn run(pairs: &[(String, String)], cfg: &LlmConfig) -> Result<serde_json::Va
         } else {
             header(cat).ok_or_else(|| format!("unknown category '{cat}'"))?
         };
-        let answer = one_call(cfg, system, text, cat)?;
+        let answer = one_call(cfg, system, text, mode)?;
         let key = if cat.is_empty() { "answer" } else { cat.as_str() };
         results.insert(key.to_string(), as_value(&answer));
     }
@@ -118,7 +270,7 @@ fn as_value(answer: &str) -> serde_json::Value {
     serde_json::Value::String(answer.trim().to_string())
 }
 
-fn one_call(cfg: &LlmConfig, system: &str, user: &str, label: &str) -> Result<String, String> {
+fn one_call(cfg: &LlmConfig, system: &str, user: &str, mode: Mode) -> Result<String, String> {
     let body = serde_json::json!({
         "model": cfg.model,
         "temperature": 0.2,
@@ -128,21 +280,25 @@ fn one_call(cfg: &LlmConfig, system: &str, user: &str, label: &str) -> Result<St
             {"role": "user", "content": user},
         ],
     });
+    // Start the spinner BEFORE the request: a reasoning model can hold the connection for seconds
+    // (connecting + thinking server-side) before the first byte. Dropped on error or first token.
+    let spinner = (mode == Mode::User).then(|| Spinner::start("thinking"));
     let resp = ureq::post(&cfg.url)
         .set("Authorization", &format!("Bearer {}", cfg.key))
         .set("Content-Type", "application/json")
         .send_json(body)
         .map_err(|e| format!("request failed: {e}"))?;
-    stream_content(resp, label)
+    stream(resp, mode, spinner)
 }
 
-/// Read an OpenAI-compatible SSE stream: print the model's reasoning to stderr live (thinking while
-/// waiting) and accumulate the answer `content` for the caller. stdout is never touched here.
-fn stream_content(resp: ureq::Response, label: &str) -> Result<String, String> {
+/// Read an OpenAI-compatible SSE stream and accumulate the answer `content`. In User mode the
+/// spinner (started by the caller) runs until the first token, then reasoning + text stream live to
+/// stderr; in Model mode nothing is shown. stdout is never touched here.
+fn stream(resp: ureq::Response, mode: Mode, mut spinner: Option<Spinner>) -> Result<String, String> {
     let mut err = std::io::stderr();
     let reader = BufReader::new(resp.into_reader());
     let mut content = String::new();
-    let mut thinking = false;
+    let mut shown = false;
     for line in reader.lines() {
         let line = line.map_err(|e| format!("stream read: {e}"))?;
         let data = match line.strip_prefix("data:") {
@@ -157,30 +313,59 @@ fn stream_content(resp: ureq::Response, label: &str) -> Result<String, String> {
             Err(_) => continue, // keep-alive or partial line; skip
         };
         let delta = &v["choices"][0]["delta"];
-        // Reasoning models stream their chain-of-thought in `reasoning_content`; show it live.
-        if let Some(r) = delta["reasoning_content"].as_str() {
-            if !r.is_empty() {
-                if !thinking {
-                    let tag = if label.is_empty() {
-                        "thinking: ".to_string()
-                    } else {
-                        format!("thinking [{label}]: ")
-                    };
-                    let _ = write!(err, "{tag}");
-                    thinking = true;
-                }
-                let _ = write!(err, "{r}");
-                let _ = err.flush();
-            }
+        let reasoning = delta["reasoning_content"].as_str().unwrap_or("");
+        let text = delta["content"].as_str().unwrap_or("");
+        if mode == Mode::User && (!reasoning.is_empty() || !text.is_empty()) {
+            spinner.take(); // drop -> stops + clears the spinner line on first token
+            let _ = write!(err, "{reasoning}{text}");
+            let _ = err.flush();
+            shown = true;
         }
-        if let Some(c) = delta["content"].as_str() {
-            content.push_str(c);
-        }
+        content.push_str(text);
     }
-    if thinking {
+    spinner.take();
+    if shown {
         let _ = writeln!(err);
     }
     Ok(content)
+}
+
+/// A tiny stderr spinner that animates until dropped. ponytail: ASCII frames (render everywhere,
+/// incl. cmd.exe) + an atomic stop flag; cleared by overwriting with spaces, not an ANSI escape.
+struct Spinner {
+    stop: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl Spinner {
+    fn start(label: &str) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let label = label.to_string();
+        let handle = thread::spawn(move || {
+            let frames = ['|', '/', '-', '\\'];
+            let mut err = std::io::stderr();
+            let mut i = 0;
+            while !flag.load(Ordering::Relaxed) {
+                let _ = write!(err, "\r{} {label}...", frames[i % frames.len()]);
+                let _ = err.flush();
+                i += 1;
+                thread::sleep(Duration::from_millis(100));
+            }
+            let _ = write!(err, "\r{}\r", " ".repeat(label.len() + 6)); // clear the line
+            let _ = err.flush();
+        });
+        Spinner { stop, handle: Some(handle) }
+    }
+}
+
+impl Drop for Spinner {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -194,20 +379,14 @@ mod tests {
             Dispatch::Category("plan-stack".into(), "media player".into())
         );
         assert_eq!(
-            classify("find python lib for web scrap"),
-            Dispatch::Prompt("find python lib for web scrap".into())
+            classify("list all rust projects in current dir"),
+            Dispatch::Prompt("list all rust projects in current dir".into())
         );
         assert_eq!(classify("ls"), Dispatch::Command("ls".into()));
-        // Quoted command string reads as a prompt (no known category).
-        assert_eq!(
-            classify("git status"),
-            Dispatch::Prompt("git status".into())
-        );
         match classify("{\"plan-stack\":\"x\"}") {
             Dispatch::Json(_) => {}
             other => panic!("expected Json, got {other:?}"),
         }
-        // Unknown category before the colon is just prose, not a category.
         assert_eq!(
             classify("note: refactor later"),
             Dispatch::Prompt("note: refactor later".into())
@@ -225,6 +404,24 @@ mod tests {
     }
 
     #[test]
+    fn is_yes_only_accepts_affirmative() {
+        assert!(is_yes("y"));
+        assert!(is_yes(" Yes \n"));
+        assert!(!is_yes(""));
+        assert!(!is_yes("n"));
+        assert!(!is_yes("no"));
+        assert!(!is_yes("sure"));
+    }
+
+    #[test]
+    fn extract_command_unwraps_fences_and_json() {
+        assert_eq!(extract_command("find . -name Cargo.toml | sort"), "find . -name Cargo.toml | sort");
+        assert_eq!(extract_command("```bash\nls -la\n```"), "ls -la");
+        assert_eq!(extract_command(r#"{"answer":"find . -name Cargo.toml"}"#), "find . -name Cargo.toml");
+        assert_eq!(extract_command(r#"{"command":"git status"}"#), "git status");
+    }
+
+    #[test]
     fn as_value_parses_json_or_keeps_string() {
         assert!(as_value(r#"here: {"stack":"rust","reason":"fast"}"#).is_object());
         assert_eq!(as_value("just text"), serde_json::Value::String("just text".into()));
@@ -235,5 +432,14 @@ mod tests {
         assert!(header("plan-stack").is_some());
         assert!(header("theme").is_some());
         assert!(header("nope").is_none());
+    }
+
+    #[test]
+    fn roles_map_to_models() {
+        assert_eq!(role("planner").unwrap().0, "z-ai/glm-5.1");
+        assert_eq!(role("orchestrator").unwrap().0, "nvidia/nemotron-3-ultra-550b-a55b");
+        assert!(role("coder").is_some());
+        assert!(role("assistant").is_some());
+        assert!(role("nope").is_none());
     }
 }
