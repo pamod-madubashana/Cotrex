@@ -84,9 +84,31 @@ post-install via `tokex setup` (interactive `inquire` prompts) — **not** a pro
 The call is best-effort: a network/parse failure prints `(llm skipped: …)` and never changes the
 exit code.
 
+## graphify code map (`graphify.rs`)
+
+tokex keeps a graphify code map fresh so agents only **read** it (`graphify-out/GRAPH_REPORT.md`,
+`graphify-out/wiki/`) and never spend a turn updating it. graphify is a Python tool
+(`pip install graphifyy`, invoked as `python -m graphify ...`, AST-only — no token cost).
+
+After a **code-changing** `tokex run` (read-only commands like `git status` skip — see
+`touches_code`), `auto_update`:
+- if set up → fires a background `graphify update .`;
+- if not → runs the one-time bootstrap **detached** (re-spawns `tokex graph`) so it never blocks the
+  command.
+
+The one-time bootstrap: `ensure_package` (`pip install graphifyy`, cached via `.graphify-ok`) →
+`register_skill` (cached via `.graphify-skill`) → build the map. **Skill registration targets the
+agent actually in use**, not just Claude: `resolve_platform` reads `config.agent`, else env
+auto-detects Claude (`CLAUDECODE`), else asks the user when interactive (or leaves guidance to run
+`tokex setup`). It calls `graphify install` (claude), `graphify install --platform <p>`, or
+`graphify <p> install` (fallback for graphify's per-platform subcommands).
+
+`tokex setup` runs the whole bootstrap up front (the "start project" moment); `tokex graph` forces a
+blocking refresh. All best-effort — never blocks or fails a tokex run. Gated by `graph_auto`.
+
 ## Out of scope (deferred, do not add speculatively)
 
-LLM-backed `plan-stack` and a persisted execution graph.
+LLM-backed `plan-stack`.
 
 ## Commit & attribution rules (must follow)
 

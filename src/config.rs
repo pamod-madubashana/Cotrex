@@ -17,6 +17,10 @@ pub struct Config {
     pub compression: String,
     /// normal | ultra-compact — rtk output verbosity.
     pub rtk_verbosity: String,
+    /// Keep the graphify code map fresh automatically after code-changing runs.
+    pub graph_auto: bool,
+    /// graphify platform id for skill registration (e.g. claude, codex, cursor). Blank = auto-detect.
+    pub agent: String,
 }
 
 impl Default for Config {
@@ -28,6 +32,8 @@ impl Default for Config {
             llm_model: String::new(),
             compression: "heuristic".into(),
             rtk_verbosity: "normal".into(),
+            graph_auto: true,
+            agent: String::new(),
         }
     }
 }
@@ -122,6 +128,22 @@ pub fn run_setup() -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .to_string();
 
+    let graph_auto = inquire::Confirm::new("Auto-update the graphify code map after code changes?")
+        .with_default(true)
+        .prompt()
+        .map_err(|e| e.to_string())?;
+
+    let agent = if graph_auto {
+        Text::new("Which agent for the graphify skill? (e.g. claude, codex, cursor, gemini; blank = auto-detect)")
+            .with_default("")
+            .prompt()
+            .map_err(|e| e.to_string())?
+            .trim()
+            .to_string()
+    } else {
+        String::new()
+    };
+
     let cfg = Config {
         provider: provider.to_string(),
         llm_url,
@@ -129,6 +151,8 @@ pub fn run_setup() -> Result<(), String> {
         llm_model,
         compression,
         rtk_verbosity,
+        graph_auto,
+        agent,
     };
     let path = save(&cfg)?;
     println!("Saved config to {}", path.display());
@@ -148,6 +172,8 @@ mod tests {
             llm_model: "m".into(),
             compression: "llm".into(),
             rtk_verbosity: "ultra-compact".into(),
+            graph_auto: true,
+            agent: "codex".into(),
         };
         let s = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
