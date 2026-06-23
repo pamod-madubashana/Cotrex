@@ -117,8 +117,10 @@ pub fn parse_json(s: &str) -> Result<Vec<(String, String)>, String> {
 pub fn run_task(cfg: &LlmConfig, task: &str, mode: Mode, opts: &Options) -> Result<i32, String> {
     let cmd = gen_command(cfg, task, mode)?;
     let intent = Intent::from_command(&cmd);
+    // Generated commands are arbitrary shell (pipes, redirects), so run via `rtk run -c` (raw),
+    // not the per-tool native filter which would split `find … | wc -l` and break the pipe.
     // No LLM insight on the run itself — the agent asked for output, not analysis.
-    let exec = Options { footer: false, llm_on_failure: false, ..*opts };
+    let exec = Options { raw: true, footer: false, llm_on_failure: false, ..*opts };
     match mode {
         Mode::User => {
             let mut err = std::io::stderr();
