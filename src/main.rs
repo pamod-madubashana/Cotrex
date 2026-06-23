@@ -11,6 +11,7 @@ mod mcp;
 mod normalize;
 mod orchestrate;
 mod prompt;
+mod script;
 
 use std::io::{self, IsTerminal, Read};
 use std::process::exit;
@@ -41,6 +42,12 @@ enum Cmd {
         /// The command line, e.g. "cargo test".
         command: String,
     },
+    /// Run a script from Scripts/ through rtk and verify with git diff. For a repetitive or
+    /// multi-file change, write one script here instead of editing files individually.
+    Script {
+        /// Path to the script (e.g. Scripts/rename.sh). Omit to create Scripts/ and print the flow.
+        file: Option<String>,
+    },
     /// Interactive setup: choose provider, enter API key, pick modes.
     Setup,
     /// Run as an MCP server over stdio (for agents that call tools natively).
@@ -53,7 +60,7 @@ enum Cmd {
 
 /// Top-level subcommands. Anything else as the first arg is treated as a command to run, so
 /// `tokex git status` works like `tokex run "git status"` (mirrors how rtk itself is invoked).
-const SUBCOMMANDS: &[&str] = &["run", "setup", "mcp", "install-rtk", "graph", "help"];
+const SUBCOMMANDS: &[&str] = &["run", "script", "setup", "mcp", "install-rtk", "graph", "help"];
 
 fn main() {
     // Two bare forms when the first arg isn't a subcommand/flag:
@@ -78,6 +85,33 @@ fn main() {
             let mut i = Intent::from_command(command);
             i.llm = llm;
             i
+        }
+        Some(Cmd::Script { file }) => {
+            let cfg = config::load();
+            let opts = orchestrate::Options {
+                raw: cfg.compression == "off",
+                ultra_compact: cfg.rtk_verbosity == "ultra-compact",
+                llm_on_failure: false, // scripts are verified by their diff, not a model insight
+            };
+            let mut out = io::stdout();
+            let mut err = io::stderr();
+            match file {
+                Some(f) => match script::run(&f, &mut out, &mut err, &opts) {
+                    Ok(code) => exit(code),
+                    Err(e) => {
+                        eprintln!("tokex: {e}");
+                        exit(1);
+                    }
+                },
+                None => {
+                    if let Err(e) = script::ensure_dir() {
+                        eprintln!("tokex: cannot create Scripts/: {e}");
+                        exit(1);
+                    }
+                    eprintln!("{}", script::INSTRUCTIONS);
+                    return;
+                }
+            }
         }
         Some(Cmd::Setup) => {
             if let Err(e) = config::run_setup() {
