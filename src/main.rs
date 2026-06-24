@@ -244,19 +244,8 @@ fn is_passthrough(first: &str) -> bool {
 fn dispatch_one(arg: &str, mode: prompt::Mode) {
     match prompt::classify(arg) {
         prompt::Dispatch::Command(cmd) => run_intent(Intent::from_command(cmd)),
-        // A "project structure" ask is a tree, not a question — answer it deterministically (no LLM,
-        // honors .gitignore) instead of letting a weak model recurse into node_modules.
-        prompt::Dispatch::Prompt(task) if prompt::is_structure_request(&task) => {
-            let cfg = config::load();
-            match prompt::project_tree(&exec_opts(&cfg)) {
-                Ok(code) => exit(code),
-                Err(e) => {
-                    eprintln!("tokex: {e}");
-                    exit(1);
-                }
-            }
-        }
-        // No role given → default to the `assistant` role.
+        // No role given → default to the `assistant` role. The model decides how to answer — including
+        // running `git ls-files`/`tree` for a local-structure ask, or generating an example structure.
         prompt::Dispatch::Prompt(task) => run_role("assistant", &task, mode),
         prompt::Dispatch::Json(s) => match prompt::parse_json(&s) {
             Ok(pairs) => run_prompt(pairs, mode),
@@ -317,21 +306,26 @@ fn fulfill(task: &str, model: &str, role_header: Option<&str>, mode: prompt::Mod
     }
 }
 
-/// Structured category prompts: print the combined JSON answer to stdout (thinking streams to
-/// stderr in User mode inside `prompt::run`).
+/// Category / JSON prompts run through the same agentic decide-run-or-answer loop as roles — each
+/// pair's category becomes the persona header, on the configured model. No special chat-only path.
 fn run_prompt(pairs: Vec<(String, String)>, mode: prompt::Mode) -> ! {
     let cfg = config::load();
-    let llm_cfg = load_llm_or_exit(&cfg);
-    match prompt::run(&pairs, &llm_cfg, mode) {
-        Ok(v) => {
-            println!("{}", serde_json::to_string_pretty(&v).unwrap());
-            exit(0);
-        }
-        Err(e) => {
+    let base = load_llm_or_exit(&cfg);
+    let opts = exec_opts(&cfg);
+    for (cat, text) in &pairs {
+        let header = match prompt::category_header(cat) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("tokex: {e}");
+                exit(2);
+            }
+        };
+        if let Err(e) = prompt::fulfill(text, &base, Some(header), mode, &opts) {
             eprintln!("tokex: {e}");
             exit(1);
         }
     }
+    exit(0);
 }
 
 #[cfg(test)]
