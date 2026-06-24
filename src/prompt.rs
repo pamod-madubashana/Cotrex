@@ -673,7 +673,7 @@ impl Spinner {
             }
             
             // 2. CLEANUP: Clear the line AND SHOW THE CURSOR again (\x1b[?25h)
-            let _ = write!(err, "\r\x1b[K\x1b[?25h"); 
+            let _ = write!(err, "\r\x1b[K"); 
             let _ = err.flush();
         });
         
@@ -687,6 +687,9 @@ impl Drop for Spinner {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+        let mut err = std::io::stderr();
+        let _ = write!(err, "\x1b[?25h");
+        let _ = err.flush();
     }
 }
 
