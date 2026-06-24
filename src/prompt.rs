@@ -67,6 +67,9 @@ you're doing or what you just learned, like a person thinking aloud: \"Let me bu
 \"Not there — let me check main.rs.\", \"Found them.\" One command; when inspecting, go ONE level at \
 a time, skip vendored/build dirs (vendor, target, node_modules, .git, dist), never dump the whole \
 recursive tree.\n\
+When getting to know a project, FIRST find what's ignored — read its .gitignore (or just use `git \
+ls-files`, which already honors it) — and never list or recurse into ignored paths (node_modules, \
+target, dist, build artifacts). A raw recursive listing that walks ignored dirs is wrong.\n\
 Answer directly for greetings and general/coding questions; RUN commands to inspect the project or \
 to do what the user asked — don't refuse or ask permission for a normal dev command. Use the fewest \
 that do the job, and cite the concrete location (path:line) when you find what was asked. Always \
@@ -77,6 +80,8 @@ Request: what does the ? operator do in Rust → {\"answer\":\"It propagates err
 early, on Ok it unwraps.\"}\n\
 Request: build this project in release → {\"run\":\"cargo build --release\",\"say\":\"Building it in \
 release mode.\"}\n\
+Request: what is this project → {\"run\":\"git ls-files\",\"say\":\"Let me list the tracked files to \
+see what this is.\"}\n\
 Request: where are user roles implemented → {\"run\":\"Select-String -Path src\\\\*.rs -Pattern \
 role\",\"say\":\"Let me search the source for role handling.\"}";
 
@@ -260,12 +265,15 @@ git); never PowerShell or cmd syntax."
 }
 
 /// Show the model's one-line narration of a step ("Let me check the routes.") to a human, in User
-/// mode only — dimmed so it reads as the agent talking, distinct from command output.
+/// mode only — a light color so it reads as the agent talking, distinct from command output.
 fn say_step(say: Option<&str>, mode: Mode) {
     if let (Mode::User, Some(s)) = (mode, say) {
-        let _ = writeln!(std::io::stderr(), "\x1b[2m{s}\x1b[0m");
+        let _ = writeln!(std::io::stderr(), "{SAY_COLOR}{s}\x1b[0m");
     }
 }
+
+/// Light steel-blue for the agent's narration — clearly lighter than the dim it replaced.
+const SAY_COLOR: &str = "\x1b[38;5;153m";
 
 // Max commands the model may run to gather info before it must give a final answer.
 const MAX_STEPS: usize = 6;
@@ -420,8 +428,11 @@ impl TailView {
 
 /// Build the ANSI-rendered ```bash block for the tail (oldest→newest, padded to `TAIL_ROWS`), with no
 /// trailing newline so the caller can count rows by counting `\n`.
+// Columns left blank on the right of the output box, so it doesn't run to the terminal edge.
+const RIGHT_MARGIN: usize = 4;
+
 fn render_block(tail: &VecDeque<String>) -> String {
-    let w = term_width().saturating_sub(1);
+    let w = term_width().saturating_sub(1 + RIGHT_MARGIN);
     let mut md = String::from("```bash\n");
     for i in 0..TAIL_ROWS {
         md.push_str(&clip(tail.get(i).map(String::as_str).unwrap_or(""), w));
@@ -546,7 +557,23 @@ fn one_call(cfg: &LlmConfig, system: &str, user: &str, mode: Mode, live: bool) -
     // Start the spinner BEFORE the request: a model can hold the connection for seconds (connecting +
     // thinking server-side) before the first byte. With live=false it spins for the whole call, so
     // the user always sees progress during the wait instead of a frozen prompt.
-    let spinner = (mode == Mode::User).then(|| Spinner::start("waiting for model"));
+    let phrases = [
+        "cooking",
+        "brewing",
+        "pondering",
+        "crunching",
+        "consulting the oracle",
+        "sparking neurons",
+        "weaving words",
+    ];
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let random_index = (nanos % phrases.len() as u128) as usize;
+    let label = phrases[random_index];
+
+    let spinner = (mode == Mode::User).then(|| Spinner::start(label));
     let resp = ureq::post(&cfg.url)
         .set("Authorization", &format!("Bearer {}", cfg.key))
         .set("Content-Type", "application/json")
@@ -605,31 +632,51 @@ fn stream(resp: ureq::Response, live: bool, mut spinner: Option<Spinner>) -> Res
     Ok(content)
 }
 
-/// A tiny stderr spinner that animates until dropped. ponytail: ASCII frames (render everywhere,
-/// incl. cmd.exe) + an atomic stop flag; cleared by overwriting with spaces, not an ANSI escape.
+/// A tiny stderr spinner that animates until dropped. Braille frames + even frame pacing make the
+/// spin smooth; the glyph is tinted to match the agent's narration. ponytail: stdlib `\r`+flush, no
+/// crossterm — a one-line redraw needs no alternate screen or raw mode (those would wipe the
+/// inline-streamed output). Braille assumes a modern terminal; fine on Windows Terminal.
 struct Spinner {
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
 }
+
+// Classic braille dots and the per-frame budget. Pacing keeps frames evenly spaced (crossterm's idea)
+// regardless of how long a write takes.
+const SPIN_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPIN_FRAME: Duration = Duration::from_millis(80);
 
 impl Spinner {
     fn start(label: &str) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let label = label.to_string();
+        
         let handle = thread::spawn(move || {
-            let frames = ['|', '/', '-', '\\'];
             let mut err = std::io::stderr();
+            
+            // 1. HIDE THE CURSOR before the animation starts loop
+            let _ = write!(err, "\x1b[?25l");
+            let _ = err.flush();
+            
             let mut i = 0;
             while !flag.load(Ordering::Relaxed) {
-                let _ = write!(err, "\r{} {label}...", frames[i % frames.len()]);
+                let start = std::time::Instant::now();
+                
+                let _ = write!(err, "\r{SAY_COLOR}{}\x1b[0m {label}...", SPIN_FRAMES[i % SPIN_FRAMES.len()]);
                 let _ = err.flush();
                 i += 1;
-                thread::sleep(Duration::from_millis(100));
+                
+                while !flag.load(Ordering::Relaxed) && start.elapsed() < SPIN_FRAME {
+                    thread::sleep(Duration::from_millis(10));
+                }
             }
-            let _ = write!(err, "\r{}\r", " ".repeat(label.len() + 6)); // clear the line
+            
+            // 2. CLEANUP: Clear the line AND SHOW THE CURSOR again (\x1b[?25h)
+            let _ = write!(err, "\r\x1b[K\x1b[?25h"); 
             let _ = err.flush();
         });
+        
         Spinner { stop, handle: Some(handle) }
     }
 }
