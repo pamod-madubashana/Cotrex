@@ -648,9 +648,9 @@ fn one_call(cfg: &LlmConfig, system: &str, user: &str, mode: Mode) -> Result<Str
             {"role": "user", "content": user},
         ],
     });
-    // Start the spinner BEFORE the request: a reasoning model can hold the connection for seconds
-    // (connecting + thinking server-side) before the first byte. Dropped on error or first token.
-    let spinner = (mode == Mode::User).then(|| Spinner::start("thinking"));
+    // Start the spinner BEFORE the request: a model can hold the connection for seconds (connecting +
+    // thinking server-side) before the first byte. It stands down only while thinking streams.
+    let spinner = (mode == Mode::User).then(|| Spinner::start("waiting"));
     let resp = ureq::post(&cfg.url)
         .set("Authorization", &format!("Bearer {}", cfg.key))
         .set("Content-Type", "application/json")
@@ -659,15 +659,17 @@ fn one_call(cfg: &LlmConfig, system: &str, user: &str, mode: Mode) -> Result<Str
     stream(resp, mode, spinner)
 }
 
-/// Read an OpenAI-compatible SSE stream and accumulate the answer `content`. In User mode the
-/// spinner (started by the caller) runs until the first reasoning token, then the model's *thinking*
-/// streams live to stderr — the `content` (the JSON answer/command) is accumulated silently so the
-/// caller can print a clean result to stdout. In Model mode nothing is shown. stdout is untouched.
+/// Read an OpenAI-compatible SSE stream and accumulate the answer `content`. In User mode every
+/// model token streams live to stderr as progress — `reasoning_content` for models that think, and
+/// the `content` itself for instruct models (the assistant) that emit no separate thinking, so the
+/// user always sees the model working instead of a bare spinner. The spinner only covers the wait
+/// before the first token. `content` is still accumulated and returned so the caller can print a
+/// clean result to stdout. In Model mode nothing streams. stdout is untouched.
 fn stream(resp: ureq::Response, mode: Mode, mut spinner: Option<Spinner>) -> Result<String, String> {
     let mut err = std::io::stderr();
     let reader = BufReader::new(resp.into_reader());
     let mut content = String::new();
-    let mut shown_thinking = false;
+    let mut shown = false; // streamed something to stderr (so we close its line at the end)
     for line in reader.lines() {
         let line = line.map_err(|e| format!("stream read: {e}"))?;
         let data = match line.strip_prefix("data:") {
@@ -684,17 +686,25 @@ fn stream(resp: ureq::Response, mode: Mode, mut spinner: Option<Spinner>) -> Res
         let delta = &v["choices"][0]["delta"];
         let reasoning = delta["reasoning_content"].as_str().unwrap_or("");
         if mode == Mode::User && !reasoning.is_empty() {
-            spinner.take(); // stop + clear the spinner on the first thinking token
+            spinner.take();
+            shown = true;
             let _ = write!(err, "{reasoning}");
             let _ = err.flush();
-            shown_thinking = true;
         }
         if let Some(t) = delta["content"].as_str() {
-            content.push_str(t);
+            if !t.is_empty() {
+                if mode == Mode::User {
+                    spinner.take(); // model is producing output — stand the spinner down
+                    shown = true;
+                    let _ = write!(err, "{t}");
+                    let _ = err.flush();
+                }
+                content.push_str(t);
+            }
         }
     }
-    spinner.take(); // stop the spinner if it never showed thinking (e.g. an instruct model)
-    if shown_thinking {
+    spinner.take();
+    if shown {
         let _ = writeln!(err);
     }
     Ok(content)
