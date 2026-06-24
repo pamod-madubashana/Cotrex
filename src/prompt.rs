@@ -352,8 +352,8 @@ fn exec_capture(cmd: &str, opts: &Options, mode: Mode) -> Result<(i32, String), 
 /// Live tail of a running command. Captures every byte (returned to the caller) while redrawing the
 /// last `TAIL_ROWS` lines in place on stderr as a markdown ```bash block (rendered to ANSI, so it
 /// shows as a styled code box, not raw backticks), so a human watches output stream by without it
-/// scrolling the terminal. Erased when the command finishes, leaving only the synthesized answer.
-/// Off in Model mode or when stderr isn't a TTY (no cursor control).
+/// scrolling the terminal. The final tail is left on screen when the command finishes, so the
+/// output stays visible. Off in Model mode or when stderr isn't a TTY (no cursor control).
 /// ponytail: track the rows we printed and clear-to-end before each repaint, so a variable-height
 /// render stays aligned; throttle repaints so a fast command doesn't flicker.
 const TAIL_ROWS: usize = 5;
@@ -408,12 +408,11 @@ impl TailView {
         self.last_draw = std::time::Instant::now();
     }
 
-    /// Return the full captured output, erasing the viewport first so the final answer stays clean.
+    /// Return the full captured output, leaving the final tail on screen (so the command's output
+    /// stays visible after it finishes) and dropping the cursor below it for what prints next.
     fn finish(self) -> Vec<u8> {
         if self.live && self.shown {
-            let mut err = std::io::stderr();
-            let _ = write!(err, "\r\x1b[{}A\x1b[J", self.rows); // up over the last paint, clear down
-            let _ = err.flush();
+            let _ = writeln!(std::io::stderr()); // move below the retained block, don't erase it
         }
         self.full
     }
@@ -545,8 +544,9 @@ fn one_call(cfg: &LlmConfig, system: &str, user: &str, mode: Mode, live: bool) -
         ],
     });
     // Start the spinner BEFORE the request: a model can hold the connection for seconds (connecting +
-    // thinking server-side) before the first byte.
-    let spinner = (mode == Mode::User).then(|| Spinner::start("thinking"));
+    // thinking server-side) before the first byte. With live=false it spins for the whole call, so
+    // the user always sees progress during the wait instead of a frozen prompt.
+    let spinner = (mode == Mode::User).then(|| Spinner::start("waiting for model"));
     let resp = ureq::post(&cfg.url)
         .set("Authorization", &format!("Bearer {}", cfg.key))
         .set("Content-Type", "application/json")
