@@ -35,15 +35,14 @@ pub enum Mode {
 const CATEGORIES: &[(&str, &str)] = &[
     (
         "plan-stack",
-        "You name the single best application tech stack for a developer's task. Output ONLY \
-minified JSON with exactly two keys: stack (short lowercase stack name) and reason (one concise \
-sentence). Do NOT output code, commands, file contents, install steps, markdown, or any other field.",
+        "You recommend the single best application tech stack for a developer's task. Inspect the \
+working directory first if it helps you decide. Answer with the stack name and one concise sentence \
+of reasoning — nothing more.",
     ),
     (
         "theme",
-        "You are a senior UI designer. Given a short style description, output ONLY minified JSON \
-with keys: palette (array of hex colors), font (string), effects (array of short phrases), \
-rationale (one concise sentence). No code, no markdown, no other fields.",
+        "You are a senior UI designer. Given a short style description, answer with a color palette \
+(hex colors), a font, a few key effects, and one concise sentence of rationale.",
     ),
 ];
 
@@ -68,6 +67,16 @@ command per turn; stay within the current directory tree. Output ONLY the JSON."
 /// The header (system prompt) bound to a category, if it is known.
 pub fn header(category: &str) -> Option<&'static str> {
     CATEGORIES.iter().find(|(n, _)| *n == category).map(|(_, h)| *h)
+}
+
+/// Resolve a category to its agentic persona header. An empty category (a JSON object with an empty
+/// key) falls back to the default; an unknown one is an error.
+pub fn category_header(category: &str) -> Result<&'static str, String> {
+    if category.is_empty() {
+        Ok(DEFAULT_HEADER)
+    } else {
+        header(category).ok_or_else(|| format!("unknown category '{category}'"))
+    }
 }
 
 // Roles: `tokex <role> "<task>"` offloads a small task to a role-specific model and returns its
@@ -114,122 +123,6 @@ pub fn role(name: &str) -> Option<(&'static str, &'static str)> {
 /// Build an `LlmConfig` that reuses the configured endpoint + key but swaps in `model`.
 pub fn with_model(base: &LlmConfig, model: &str) -> LlmConfig {
     LlmConfig { url: base.url.clone(), key: base.key.clone(), model: model.to_string() }
-}
-
-/// A "show me the project/directory structure" request — answered deterministically as a tree, with
-/// no model call (it's a `tree`, not a question). ponytail: substring heuristic, not NLP.
-pub fn is_structure_request(task: &str) -> bool {
-    let t = task.to_ascii_lowercase();
-    (t.contains("structure") || t.contains("layout") || t.contains("tree"))
-        && (t.contains("project")
-            || t.contains("dir")
-            || t.contains("folder")
-            || t.contains("repo")
-            || t.contains("file")
-            || t.contains("codebase")
-            || t.contains("tree"))
-}
-
-/// Print the project structure as a tree — no LLM. Files come from `git ls-files` (so .gitignore is
-/// honored and node_modules/target never appear); outside a git repo, a shallow walk that skips the
-/// usual noise dirs. Depth/breadth limited so it's a structure overview, not a full file dump.
-pub fn project_tree(opts: &Options) -> Result<i32, String> {
-    let listing = capture("git ls-files --cached --others --exclude-standard", opts).unwrap_or_default();
-    let mut paths: Vec<String> =
-        listing.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
-    if paths.is_empty() {
-        paths = shallow_paths();
-    }
-    if paths.is_empty() {
-        return Err("nothing to show (empty or unreadable directory)".into());
-    }
-    print!("{}", render_tree(&paths));
-    Ok(0)
-}
-
-/// Run a read-only command through rtk and return its captured output (no viewport, no model).
-fn capture(cmd: &str, opts: &Options) -> Result<String, String> {
-    let exec = Options { raw: true, footer: false, llm_on_failure: false, ..*opts };
-    let mut buf: Vec<u8> = Vec::new();
-    orchestrate::run(&Intent::from_command(cmd), &mut buf, &mut std::io::sink(), None, &exec)?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
-}
-
-/// Fallback file list when not in a git repo: walk the cwd a couple levels deep, skipping noise dirs.
-fn shallow_paths() -> Vec<String> {
-    const SKIP: &[&str] = &[".git", "node_modules", "target", "vendor", "dist", ".next", "build"];
-    fn walk(dir: &std::path::Path, rel: &str, depth: usize, out: &mut Vec<String>) {
-        if depth > TREE_DEPTH {
-            return;
-        }
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if SKIP.contains(&name.as_str()) {
-                continue;
-            }
-            let r = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
-            if e.path().is_dir() {
-                walk(&e.path(), &r, depth + 1, out);
-            } else {
-                out.push(r);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(std::path::Path::new("."), "", 0, &mut out);
-    out
-}
-
-// Tree shape limits — enough to see the structure, not every file. ponytail: tunable knobs.
-const TREE_DEPTH: usize = 2;
-const TREE_BREADTH: usize = 60;
-
-#[derive(Default)]
-struct TreeNode {
-    children: std::collections::BTreeMap<String, TreeNode>,
-}
-
-/// Render file paths (forward-slash separated) as an ASCII tree, dirs before files, depth/breadth
-/// limited.
-fn render_tree(paths: &[String]) -> String {
-    let mut root = TreeNode::default();
-    for p in paths {
-        let mut cur = &mut root;
-        for part in p.split('/').filter(|s| !s.is_empty()) {
-            cur = cur.children.entry(part.to_string()).or_default();
-        }
-    }
-    let mut out = String::from(".\n");
-    render_node(&root, "", 0, &mut out);
-    out
-}
-
-fn render_node(node: &TreeNode, prefix: &str, depth: usize, out: &mut String) {
-    let mut entries: Vec<(&String, &TreeNode)> = node.children.iter().collect();
-    // Dirs (have children) first, then files; each alphabetical.
-    entries.sort_by_key(|(name, n)| (n.children.is_empty(), name.to_lowercase()));
-    let has_more = entries.len() > TREE_BREADTH;
-    let shown = entries.len().min(TREE_BREADTH);
-    for (idx, (name, child)) in entries.iter().take(shown).enumerate() {
-        let last = idx + 1 == shown && !has_more;
-        let connector = if last { "└── " } else { "├── " };
-        let is_dir = !child.children.is_empty();
-        out.push_str(&format!("{prefix}{connector}{name}{}\n", if is_dir { "/" } else { "" }));
-        if is_dir {
-            let ext = if last { "    " } else { "│   " };
-            if depth + 1 < TREE_DEPTH {
-                render_node(child, &format!("{prefix}{ext}"), depth + 1, out);
-            } else {
-                let n = child.children.len();
-                let unit = if n == 1 { "entry" } else { "entries" };
-                out.push_str(&format!("{prefix}{ext}└── … ({n} {unit})\n"));
-            }
-        }
-    }
-    if has_more {
-        out.push_str(&format!("{prefix}└── … ({} more)\n", entries.len() - TREE_BREADTH));
-    }
 }
 
 /// How a single bare argument should be handled.
@@ -609,35 +502,6 @@ fn trunc(s: &str, max: usize) -> String {
     }
 }
 
-/// Run category prompts and collect the answers into one JSON object keyed by category (`answer`
-/// when there's no category). Used for structured categories, not runnable tasks.
-pub fn run(pairs: &[(String, String)], cfg: &LlmConfig, mode: Mode) -> Result<serde_json::Value, String> {
-    let mut results = serde_json::Map::new();
-    for (cat, text) in pairs {
-        let system = if cat.is_empty() {
-            DEFAULT_HEADER
-        } else {
-            header(cat).ok_or_else(|| format!("unknown category '{cat}'"))?
-        };
-        let answer = one_call(cfg, system, text, mode)?;
-        let key = if cat.is_empty() { "answer" } else { cat.as_str() };
-        results.insert(key.to_string(), as_value(&answer));
-    }
-    Ok(serde_json::Value::Object(results))
-}
-
-/// Embed the model's answer as parsed JSON when it returned an object, else as a plain string.
-fn as_value(answer: &str) -> serde_json::Value {
-    if let (Some(a), Some(b)) = (answer.find('{'), answer.rfind('}')) {
-        if a < b {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&answer[a..=b]) {
-                return v;
-            }
-        }
-    }
-    serde_json::Value::String(answer.trim().to_string())
-}
-
 fn one_call(cfg: &LlmConfig, system: &str, user: &str, mode: Mode) -> Result<String, String> {
     let body = serde_json::json!({
         "model": cfg.model,
@@ -824,43 +688,10 @@ mod tests {
     }
 
     #[test]
-    fn as_value_parses_json_or_keeps_string() {
-        assert!(as_value(r#"here: {"stack":"rust","reason":"fast"}"#).is_object());
-        assert_eq!(as_value("just text"), serde_json::Value::String("just text".into()));
-    }
-
-    #[test]
     fn known_categories_have_headers() {
         assert!(header("plan-stack").is_some());
         assert!(header("theme").is_some());
         assert!(header("nope").is_none());
-    }
-
-    #[test]
-    fn structure_requests_detected() {
-        assert!(is_structure_request("give me current project structure"));
-        assert!(is_structure_request("show the directory tree"));
-        assert!(is_structure_request("what's the folder layout"));
-        assert!(!is_structure_request("what does the ? operator do"));
-        assert!(!is_structure_request("list rust crates"));
-    }
-
-    #[test]
-    fn render_tree_groups_dirs_first_and_limits_depth() {
-        let paths = vec![
-            "Cargo.toml".to_string(),
-            "src/main.rs".to_string(),
-            "src/prompt.rs".to_string(),
-            "docs/docs/usage.md".to_string(),
-        ];
-        let t = render_tree(&paths);
-        assert!(t.contains("src/"), "{t}");
-        assert!(t.contains("main.rs"), "{t}");
-        assert!(t.contains("Cargo.toml"), "{t}");
-        // docs/docs is at the depth limit, so its file is collapsed, not listed.
-        assert!(!t.contains("usage.md"), "{t}");
-        // Dir before file at the root: src/ (dir) precedes Cargo.toml (file).
-        assert!(t.find("src/").unwrap() < t.find("Cargo.toml").unwrap(), "{t}");
     }
 
     #[test]
