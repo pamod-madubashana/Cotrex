@@ -62,7 +62,10 @@ tree/table/aligned layout in a fenced ``` code block.\n\
 - {\"run\":\"<command>\",\"say\":\"<one line>\"} — to inspect the project (files, dirs, git, build \
 state) OR to CARRY OUT an action the user asked for (build, test, run, format, lint, fix…). You have \
 a REAL shell in THIS directory — you are not sandboxed; never say you lack access to the code or \
-build system, just run the command. `say` is one short first-person line telling the user what \
+build system, just run the command. When the user GIVES you an explicit command (quoted or in \
+backticks), run THAT command verbatim — only fill in per-item placeholders (e.g. a filename across \
+files). Do NOT rewrite, restyle, or restructure it into your own idiom. `say` is one short \
+first-person line telling the user what \
 you're doing or what you just learned, like a person thinking aloud: \"Let me build it in release.\", \
 \"Not there — let me check main.rs.\", \"Found them.\" One command; when inspecting, go ONE level at \
 a time, skip vendored/build dirs (vendor, target, node_modules, .git, dist), never dump the whole \
@@ -426,16 +429,17 @@ impl TailView {
     }
 }
 
-/// Build the ANSI-rendered ```bash block for the tail (oldest→newest, padded to `TAIL_ROWS`), with no
-/// trailing newline so the caller can count rows by counting `\n`.
+/// Build the ANSI-rendered ```bash block for the tail (oldest→newest), with no trailing newline so
+/// the caller can count rows by counting `\n`. Height tracks the actual line count (capped at
+/// `TAIL_ROWS` by the VecDeque) — fewer than `TAIL_ROWS` lines render a smaller box, not blank pad.
 // Columns left blank on the right of the output box, so it doesn't run to the terminal edge.
 const RIGHT_MARGIN: usize = 4;
 
 fn render_block(tail: &VecDeque<String>) -> String {
     let w = term_width().saturating_sub(1 + RIGHT_MARGIN);
     let mut md = String::from("```bash\n");
-    for i in 0..TAIL_ROWS {
-        md.push_str(&clip(tail.get(i).map(String::as_str).unwrap_or(""), w));
+    for line in tail {
+        md.push_str(&clip(line, w));
         md.push('\n');
     }
     md.push_str("```");
