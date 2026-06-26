@@ -73,23 +73,35 @@ description: "Tokex RTK orchestration skills for {project_name}. Run commands, i
 
 # Tokex Skills
 
-## Available commands
+**IMPORTANT:** You are an AI agent. Always use `tokex -m` (model mode) to get clean output
+without spinners, live streaming, or ANSI decorations. Never use `tokex run` or bare `tokex`
+without `-m` — that mode is for humans and will produce noisy, hard-to-parse output.
 
-### Run a command
+## Rules
+
+1. Always prefix commands with `tokex -m` — never `tokex run` or bare `tokex`.
+2. One command at a time. Feed the result back before running the next.
+3. Skip vendor/, target/, .git/ — they're noise.
+
+## Run a command
+
 ```bash
-tokex run "cargo test"
-tokex cargo test          # shorthand
+tokex -m "cargo test"
+tokex -m cargo test           # shorthand
+tokex -m "git status"
 ```
 
-### Show project structure
+## Show project structure
+
 ```bash
-tokex "show the project tree"
-tokex "give me the directory layout"
+tokex -m "show the project tree"
+tokex -m "give me the directory layout"
 ```
 
-### Install skills for this project
+## Install skills for this project
+
 ```bash
-tokex install {agent}     # reinstall/update skills
+tokex install {agent}         # reinstall/update skills
 ```
 
 ## Installed for: {project_name}
