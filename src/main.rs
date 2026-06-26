@@ -10,8 +10,10 @@ mod llm;
 mod mcp;
 mod normalize;
 mod orchestrate;
+mod permission;
 mod prompt;
 mod script;
+mod tool;
 
 use std::io::{self, IsTerminal, Read};
 use std::process::exit;
@@ -60,16 +62,31 @@ enum Cmd {
 
 /// Top-level subcommands. Anything else as the first arg is treated as a command to run, so
 /// `tokex git status` works like `tokex run "git status"` (mirrors how rtk itself is invoked).
-const SUBCOMMANDS: &[&str] = &["run", "script", "setup", "mcp", "install-rtk", "graph", "help"];
+const SUBCOMMANDS: &[&str] = &[
+    "run",
+    "script",
+    "setup",
+    "mcp",
+    "install-rtk",
+    "graph",
+    "help",
+];
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     // `-m` / `--model` selects Model mode (output only, for agents); default is User mode
     // (spinner + live-streamed thinking, for humans). The rest of argv follows.
-    let model_mode = matches!(args.get(1).map(String::as_str), Some("-m") | Some("--model"));
+    let model_mode = matches!(
+        args.get(1).map(String::as_str),
+        Some("-m") | Some("--model")
+    );
     let rest: &[String] = if model_mode { &args[2..] } else { &args[1..] };
-    let mode = if model_mode { prompt::Mode::Model } else { prompt::Mode::User };
+    let mode = if model_mode {
+        prompt::Mode::Model
+    } else {
+        prompt::Mode::User
+    };
 
     if let Some(first) = rest.first() {
         // Role: `tokex <role> "<task>"` — offload a task to a role's model, return its answer.
@@ -254,6 +271,25 @@ fn dispatch_one(arg: &str, mode: prompt::Mode) {
             }
         },
         prompt::Dispatch::Category(cat, text) => run_prompt(vec![(cat, text)], mode),
+        // Structure request: short-circuit the model, render tree directly.
+        prompt::Dispatch::Structure => {
+            let tree = prompt::project_tree();
+            match mode {
+                prompt::Mode::User => {
+                    let opts = markdown_to_ansi::Options {
+                        syntax_highlight: true,
+                        width: std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()),
+                        code_bg: true,
+                    };
+                    println!(
+                        "{}",
+                        markdown_to_ansi::render(&format!("```\n{tree}```"), &opts)
+                    );
+                }
+                prompt::Mode::Model => println!("{tree}"),
+            }
+            exit(0);
+        }
     }
 }
 
@@ -283,20 +319,33 @@ fn run_role(role: &str, task: &str, mode: prompt::Mode) -> ! {
         eprintln!("tokex: role '{role}' needs a task, e.g. tokex {role} \"...\"");
         exit(2);
     }
-    let (model, header) = prompt::role(role).unwrap_or_else(|| {
+    let (model, header, _role_mode, max_steps) = prompt::role(role).unwrap_or_else(|| {
         eprintln!("tokex: unknown role '{role}'");
         exit(2);
     });
-    fulfill(task, model, Some(header), mode);
+    fulfill(task, model, Some(header), mode, max_steps);
 }
 
 /// Shared task fulfilment: pick the endpoint/key from config, swap in `model`, and let `prompt`
 /// decide run-vs-answer.
-fn fulfill(task: &str, model: &str, role_header: Option<&str>, mode: prompt::Mode) -> ! {
+fn fulfill(
+    task: &str,
+    model: &str,
+    role_header: Option<&str>,
+    mode: prompt::Mode,
+    max_steps: usize,
+) -> ! {
     let cfg = config::load();
     let base = load_llm_or_exit(&cfg);
     let model_cfg = prompt::with_model(&base, model);
-    match prompt::fulfill(task, &model_cfg, role_header, mode, &exec_opts(&cfg)) {
+    match prompt::fulfill(
+        task,
+        &model_cfg,
+        role_header,
+        mode,
+        &exec_opts(&cfg),
+        max_steps,
+    ) {
         Ok(code) => exit(code),
         Err(e) => {
             eprintln!("tokex: {e}");
@@ -319,7 +368,7 @@ fn run_prompt(pairs: Vec<(String, String)>, mode: prompt::Mode) -> ! {
                 exit(2);
             }
         };
-        if let Err(e) = prompt::fulfill(text, &base, Some(header), mode, &opts) {
+        if let Err(e) = prompt::fulfill(text, &base, Some(header), mode, &opts, prompt::MAX_STEPS) {
             eprintln!("tokex: {e}");
             exit(1);
         }

@@ -40,7 +40,10 @@ pub fn serve() -> ! {
             Ok(None) => {} // notification: no reply
             Ok(Some(result)) => {
                 if let Some(id) = id {
-                    send(&mut stdout, json!({"jsonrpc":"2.0","id":id,"result":result}));
+                    send(
+                        &mut stdout,
+                        json!({"jsonrpc":"2.0","id":id,"result":result}),
+                    );
                 }
             }
             Err((code, msg)) => {
@@ -81,7 +84,7 @@ fn tools_list() -> Value {
     json!({"tools": [{
         "name": "run",
         "description": "Run a shell command through RTK and return normalized, structured execution \
-events (stdout/stderr lines with severity, a result with exit code, and an optional LLM insight).",
+    events (stdout/stderr lines with severity, a result with exit code, and an optional LLM insight).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -93,8 +96,8 @@ events (stdout/stderr lines with severity, a result with exit code, and an optio
     }, {
         "name": "set_agent",
         "description": "Tell tokex which AI agent you are so it can install the graphify code-map \
-skill for the right platform. Call this once with your platform id if a run result says the agent \
-is unknown.",
+    skill for the right platform. Call this once with your platform id if a run result says the agent \
+    is unknown.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -143,7 +146,12 @@ fn tool_set_agent(params: &Value) -> Value {
 /// Execute the `run` tool via the shared core, returning MCP tool-result content.
 fn tool_run(params: &Value, cfg: &Config) -> Value {
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
-    let command = args.get("command").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let command = args
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if command.is_empty() {
         return tool_error("missing required argument 'command'".into());
     }
@@ -158,7 +166,11 @@ fn tool_run(params: &Value, cfg: &Config) -> Value {
         footer: true,
     };
     // Best-effort LLM: if requested but unconfigured, just run without the insight.
-    let llm_cfg = if intent.llm || opts.llm_on_failure { LlmConfig::from_config(cfg) } else { None };
+    let llm_cfg = if intent.llm || opts.llm_on_failure {
+        LlmConfig::from_config(cfg)
+    } else {
+        None
+    };
 
     // Capture the machine channel; discard the human summary. stdout stays the protocol channel.
     let mut machine: Vec<u8> = Vec::new();
@@ -193,34 +205,50 @@ mod tests {
 
     #[test]
     fn initialize_reports_protocol_and_name() {
-        let r = dispatch("initialize", &json!({}), &Config::default()).unwrap().unwrap();
+        let r = dispatch("initialize", &json!({}), &Config::default())
+            .unwrap()
+            .unwrap();
         assert_eq!(r["protocolVersion"], PROTOCOL_VERSION);
         assert_eq!(r["serverInfo"]["name"], "tokex");
     }
 
     #[test]
     fn tools_list_exposes_run() {
-        let r = dispatch("tools/list", &json!({}), &Config::default()).unwrap().unwrap();
+        let r = dispatch("tools/list", &json!({}), &Config::default())
+            .unwrap()
+            .unwrap();
         assert_eq!(r["tools"][0]["name"], "run");
     }
 
     #[test]
     fn tools_list_exposes_set_agent() {
-        let r = dispatch("tools/list", &json!({}), &Config::default()).unwrap().unwrap();
-        let names: Vec<&str> =
-            r["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+        let r = dispatch("tools/list", &json!({}), &Config::default())
+            .unwrap()
+            .unwrap();
+        let names: Vec<&str> = r["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
         assert!(names.contains(&"set_agent"));
     }
 
     #[test]
     fn set_agent_requires_agent() {
-        let r = tools_call(&json!({"name": "set_agent", "arguments": {}}), &Config::default());
+        let r = tools_call(
+            &json!({"name": "set_agent", "arguments": {}}),
+            &Config::default(),
+        );
         assert_eq!(r["isError"], true);
     }
 
     #[test]
     fn initialized_is_a_notification() {
-        assert_eq!(dispatch("notifications/initialized", &json!({}), &Config::default()), Ok(None));
+        assert_eq!(
+            dispatch("notifications/initialized", &json!({}), &Config::default()),
+            Ok(None)
+        );
     }
 
     #[test]

@@ -23,7 +23,11 @@ impl LlmConfig {
         } else {
             cfg.llm_model.clone()
         };
-        Some(LlmConfig { url: cfg.llm_url.clone(), key: cfg.llm_key.clone(), model })
+        Some(LlmConfig {
+            url: cfg.llm_url.clone(),
+            key: cfg.llm_key.clone(),
+            model,
+        })
     }
 }
 
@@ -46,7 +50,12 @@ string), important_errors (array of short strings, max 5), suggested_fix (short 
 markdown, no prose.";
 
 /// POST the captured output to an OpenAI-compatible chat endpoint and parse the insight.
-pub fn compress(cfg: &LlmConfig, command: &str, exit_code: i32, raw: &str) -> Result<Insight, String> {
+pub fn compress(
+    cfg: &LlmConfig,
+    command: &str,
+    exit_code: i32,
+    raw: &str,
+) -> Result<Insight, String> {
     let user = format!("command: {command}\nexit_code: {exit_code}\n--- output ---\n{raw}");
     let body = serde_json::json!({
         "model": cfg.model,

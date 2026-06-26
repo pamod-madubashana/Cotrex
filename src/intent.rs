@@ -53,10 +53,16 @@ impl Intent {
     /// Validate the intent. Cheap trust-boundary check, not a sandbox (RTK owns isolation).
     pub fn validate(&self) -> Result<(), String> {
         if self.tool != "rtk" {
-            return Err(format!("unsupported tool '{}' (v1 only routes to rtk)", self.tool));
+            return Err(format!(
+                "unsupported tool '{}' (v1 only routes to rtk)",
+                self.tool
+            ));
         }
         if self.action != "run" {
-            return Err(format!("unsupported action '{}' (v1 only supports 'run')", self.action));
+            return Err(format!(
+                "unsupported action '{}' (v1 only supports 'run')",
+                self.action
+            ));
         }
         if self.command.trim().is_empty() {
             return Err("empty command".into());
@@ -74,9 +80,36 @@ impl Intent {
         // Subcommands rtk has a dedicated filter for. Keep in sync with `rtk --help`.
         // ponytail: a flat allowlist; expand as RTK adds filters, no need for a trait/registry.
         const RTK_NATIVE: &[&str] = &[
-            "git", "gh", "glab", "cargo", "npm", "npx", "pnpm", "docker", "kubectl", "ls", "tree",
-            "find", "grep", "wc", "wget", "curl", "dotnet", "tsc", "next", "lint", "prettier",
-            "jest", "vitest", "prisma", "playwright", "ruff", "pytest", "mypy", "psql", "aws",
+            "git",
+            "gh",
+            "glab",
+            "cargo",
+            "npm",
+            "npx",
+            "pnpm",
+            "docker",
+            "kubectl",
+            "ls",
+            "tree",
+            "find",
+            "grep",
+            "wc",
+            "wget",
+            "curl",
+            "dotnet",
+            "tsc",
+            "next",
+            "lint",
+            "prettier",
+            "jest",
+            "vitest",
+            "prisma",
+            "playwright",
+            "ruff",
+            "pytest",
+            "mypy",
+            "psql",
+            "aws",
         ];
         if RTK_NATIVE.contains(&first) {
             // rtk git status   ->  ["git", "status"]
