@@ -52,13 +52,23 @@ pub fn run(
     ensure_dir().map_err(|e| format!("cannot create Scripts/: {e}"))?;
     if !Path::new(file).exists() {
         writeln!(err, "{INSTRUCTIONS}").ok();
-        writeln!(err, "\nNo script at {file} yet — write it there, then rerun.").ok();
+        writeln!(
+            err,
+            "\nNo script at {file} yet — write it there, then rerun."
+        )
+        .ok();
         return Ok(1);
     }
 
     // Run the script through rtk (tokex never executes raw — orchestrate spawns `rtk run -c`).
     // No LLM here: a script is verified by its diff, not by a model insight.
-    let code = orchestrate::run(&Intent::from_command(exec_command(file)), out, err, None, opts)?;
+    let code = orchestrate::run(
+        &Intent::from_command(exec_command(file)),
+        out,
+        err,
+        None,
+        opts,
+    )?;
 
     // Verify: show what changed. The agent reads the diff, not the files.
     // Use fixed options, not the caller's: `--ultra-compact` would leak through to `git diff`
@@ -66,9 +76,19 @@ pub fn run(
     // ponytail: a plain `git diff` includes any pre-existing uncommitted changes too; commit or
     // stash first if you need the script's changes in isolation.
     writeln!(err, "— verify (git diff) —").ok();
-    let verify_opts =
-        Options { raw: false, ultra_compact: false, llm_on_failure: false, footer: true };
-    orchestrate::run(&Intent::from_command("git diff --stat"), out, err, None, &verify_opts)?;
+    let verify_opts = Options {
+        raw: false,
+        ultra_compact: false,
+        llm_on_failure: false,
+        footer: true,
+    };
+    orchestrate::run(
+        &Intent::from_command("git diff --stat"),
+        out,
+        err,
+        None,
+        &verify_opts,
+    )?;
 
     Ok(code)
 }
@@ -80,7 +100,10 @@ mod tests {
     #[test]
     fn exec_command_picks_runner_by_extension() {
         assert_eq!(exec_command("Scripts/x.sh"), "bash Scripts/x.sh");
-        assert_eq!(exec_command("Scripts/x.PS1"), "powershell -ExecutionPolicy Bypass -File Scripts/x.PS1");
+        assert_eq!(
+            exec_command("Scripts/x.PS1"),
+            "powershell -ExecutionPolicy Bypass -File Scripts/x.PS1"
+        );
         assert_eq!(exec_command("Scripts/x.py"), "python Scripts/x.py");
         assert_eq!(exec_command("Scripts/noext"), "bash Scripts/noext");
     }

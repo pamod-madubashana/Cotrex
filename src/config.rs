@@ -57,6 +57,15 @@ pub fn load() -> Config {
     if let Ok(v) = std::env::var("TOKEX_LLM_MODEL") {
         cfg.llm_model = v;
     }
+    if let Ok(v) = std::env::var("TOKEX_COMPRESSION") {
+        cfg.compression = v;
+    }
+    if let Ok(v) = std::env::var("TOKEX_RTK_VERBOSITY") {
+        cfg.rtk_verbosity = v;
+    }
+    if let Ok(v) = std::env::var("TOKEX_GRAPH_AUTO") {
+        cfg.graph_auto = v == "true" || v == "1" || v == "yes";
+    }
     cfg
 }
 
@@ -73,7 +82,10 @@ pub fn save(cfg: &Config) -> Result<PathBuf, String> {
 /// Preset (base URL, default model) for each known provider.
 fn preset(provider: &str) -> (&'static str, &'static str) {
     match provider {
-        "Groq" => ("https://api.groq.com/openai/v1/chat/completions", "llama-3.1-8b-instant"),
+        "Groq" => (
+            "https://api.groq.com/openai/v1/chat/completions",
+            "llama-3.1-8b-instant",
+        ),
         "OpenRouter" => (
             "https://openrouter.ai/api/v1/chat/completions",
             "meta-llama/llama-3.1-8b-instruct:free",
@@ -90,9 +102,12 @@ fn preset(provider: &str) -> (&'static str, &'static str) {
 pub fn run_setup() -> Result<(), String> {
     use inquire::{Password, PasswordDisplayMode, Select, Text};
 
-    let provider = Select::new("LLM provider", vec!["Groq", "OpenRouter", "NVIDIA NIM", "Custom"])
-        .prompt()
-        .map_err(|e| e.to_string())?;
+    let provider = Select::new(
+        "LLM provider",
+        vec!["Groq", "OpenRouter", "NVIDIA NIM", "Custom"],
+    )
+    .prompt()
+    .map_err(|e| e.to_string())?;
     let (preset_url, preset_model) = preset(provider);
 
     let llm_url = if provider == "Custom" {
@@ -114,7 +129,11 @@ pub fn run_setup() -> Result<(), String> {
 
     let compression = Select::new(
         "Default compression",
-        vec!["heuristic (rtk filter)", "llm (rtk + AI insight)", "off (raw output)"],
+        vec![
+            "heuristic (rtk filter)",
+            "llm (rtk + AI insight)",
+            "off (raw output)",
+        ],
     )
     .prompt()
     .map_err(|e| e.to_string())?

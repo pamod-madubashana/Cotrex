@@ -72,7 +72,8 @@ fn asset_for(os: &str, arch: &str) -> Option<&'static str> {
 
 fn asset_name() -> Result<&'static str, String> {
     let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
-    asset_for(os, arch).ok_or_else(|| format!("no prebuilt rtk for {os}/{arch}; install rtk manually"))
+    asset_for(os, arch)
+        .ok_or_else(|| format!("no prebuilt rtk for {os}/{arch}; install rtk manually"))
 }
 
 /// Download + extract the latest rtk and install it into the data dir. Returns the install path.
@@ -143,11 +144,26 @@ mod tests {
 
     #[test]
     fn known_platforms_map_to_assets() {
-        assert_eq!(asset_for("windows", "x86_64"), Some("rtk-x86_64-pc-windows-msvc.zip"));
-        assert_eq!(asset_for("macos", "aarch64"), Some("rtk-aarch64-apple-darwin.tar.gz"));
-        assert_eq!(asset_for("macos", "x86_64"), Some("rtk-x86_64-apple-darwin.tar.gz"));
-        assert_eq!(asset_for("linux", "x86_64"), Some("rtk-x86_64-unknown-linux-musl.tar.gz"));
-        assert_eq!(asset_for("linux", "aarch64"), Some("rtk-aarch64-unknown-linux-gnu.tar.gz"));
+        assert_eq!(
+            asset_for("windows", "x86_64"),
+            Some("rtk-x86_64-pc-windows-msvc.zip")
+        );
+        assert_eq!(
+            asset_for("macos", "aarch64"),
+            Some("rtk-aarch64-apple-darwin.tar.gz")
+        );
+        assert_eq!(
+            asset_for("macos", "x86_64"),
+            Some("rtk-x86_64-apple-darwin.tar.gz")
+        );
+        assert_eq!(
+            asset_for("linux", "x86_64"),
+            Some("rtk-x86_64-unknown-linux-musl.tar.gz")
+        );
+        assert_eq!(
+            asset_for("linux", "aarch64"),
+            Some("rtk-aarch64-unknown-linux-gnu.tar.gz")
+        );
     }
 
     #[test]

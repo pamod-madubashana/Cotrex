@@ -85,10 +85,12 @@ see what this is.\"}\n\
 Request: where are user roles implemented → {\"run\":\"Select-String -Path src\\\\*.rs -Pattern \
 role\",\"say\":\"Let me search the source for role handling.\"}";
 
-
 /// The header (system prompt) bound to a category, if it is known.
 pub fn header(category: &str) -> Option<&'static str> {
-    CATEGORIES.iter().find(|(n, _)| *n == category).map(|(_, h)| *h)
+    CATEGORIES
+        .iter()
+        .find(|(n, _)| *n == category)
+        .map(|(_, h)| *h)
 }
 
 /// Resolve a category to its agentic persona header. An empty category (a JSON object with an empty
@@ -103,48 +105,71 @@ pub fn category_header(category: &str) -> Result<&'static str, String> {
 
 // Roles: `tokex <role> "<task>"` offloads a small task to a role-specific model and returns its
 // answer, so the calling agent just waits (and spends no tokens thinking). Each row is
-// (role, model id, header). The model ids are NVIDIA NIM ids served by the configured endpoint;
-// add or retune a role by editing a row.
-const ROLES: &[(&str, &str, &str)] = &[
+// (role, model id, header, mode, max_steps). The model ids are NVIDIA NIM ids served by the
+// configured endpoint; add or retune a role by editing a row.
+//
+// Modes (inspired by OpenCode's agent system):
+// - "primary": the main agent that can run commands and answer (default for assistant)
+// - "subagent": a specialized agent called by another agent (planner, coder, etc.)
+//
+// Max steps: how many command iterations the agent can run before forced to answer.
+const ROLES: &[(&str, &str, &str, &str, usize)] = &[
     (
         "planner",
         "z-ai/glm-5.1",
         "You are a planning specialist. Given a goal, produce a concise, ordered, actionable plan as \
-numbered steps. No preamble, no code unless essential.",
+        numbered steps. No preamble, no code unless essential.",
+        "subagent",
+        3,
     ),
     (
         "router",
         "nvidia/nemotron-3-nano-30b-a3b",
         "You are a router. Given a request, decide the single best next action, tool, or role and \
-answer in one or two decisive lines. No deliberation in the output.",
+        answer in one or two decisive lines. No deliberation in the output.",
+        "subagent",
+        1,
     ),
     (
         "orchestrator",
         "nvidia/nemotron-3-ultra-550b-a55b",
         "You are an orchestrator. Break the goal into an ordered list of concrete shell commands or \
-steps that accomplish it end to end. Be specific and minimal. No prose beyond the steps.",
+        steps that accomplish it end to end. Be specific and minimal. No prose beyond the steps.",
+        "subagent",
+        4,
     ),
     (
         "coder",
         "deepseek-ai/deepseek-v4-flash",
         "You are a senior engineer. Output only the code that solves the task — correct, minimal, \
-idiomatic. No explanation unless the task asks for it.",
+        idiomatic. No explanation unless the task asks for it.",
+        "subagent",
+        5,
     ),
     (
         "assistant",
         "qwen/qwen3-next-80b-a3b-instruct",
         "You are a concise developer assistant. Answer the request briefly and practically. No fluff.",
+        "primary",
+        6,
     ),
 ];
 
-/// `(model id, header)` for a role, if known.
-pub fn role(name: &str) -> Option<(&'static str, &'static str)> {
-    ROLES.iter().find(|(n, _, _)| *n == name).map(|(_, m, h)| (*m, *h))
+/// `(model id, header, mode, max_steps)` for a role, if known.
+pub fn role(name: &str) -> Option<(&'static str, &'static str, &'static str, usize)> {
+    ROLES
+        .iter()
+        .find(|(n, _, _, _, _)| *n == name)
+        .map(|(_, m, h, mode, steps)| (*m, *h, *mode, *steps))
 }
 
 /// Build an `LlmConfig` that reuses the configured endpoint + key but swaps in `model`.
 pub fn with_model(base: &LlmConfig, model: &str) -> LlmConfig {
-    LlmConfig { url: base.url.clone(), key: base.key.clone(), model: model.to_string() }
+    LlmConfig {
+        url: base.url.clone(),
+        key: base.key.clone(),
+        model: model.to_string(),
+    }
 }
 
 /// How a single bare argument should be handled.
@@ -156,6 +181,22 @@ pub enum Dispatch {
     Category(String, String),
     /// Free-text task for the assistant agent — it decides whether to run a command or just answer.
     Prompt(String),
+    /// Project structure request — short-circuits the model and renders a tree directly.
+    Structure,
+}
+
+/// Check if a prompt is a project-structure request (e.g. "show project structure", "list tree").
+/// Short-circuits the model entirely — renders a tree from `git ls-files`.
+fn is_structure_request(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    let has_structure_word =
+        lower.contains("structure") || lower.contains("tree") || lower.contains("layout");
+    let has_directory_noun = lower.contains("project")
+        || lower.contains("directory")
+        || lower.contains("repo")
+        || lower.contains("codebase")
+        || lower.contains("files");
+    has_structure_word && has_directory_noun
 }
 
 /// Classify one argument. A single quoted arg reaches here; multi-arg invocations are commands and
@@ -172,7 +213,113 @@ pub fn classify(arg: &str) -> Dispatch {
             return Dispatch::Category(cat.trim().to_string(), rest.trim().to_string());
         }
     }
+    if is_structure_request(s) {
+        return Dispatch::Structure;
+    }
     Dispatch::Prompt(s.to_string())
+}
+
+/// Directories to skip (noise/build artifacts).
+const SKIP_DIRS: &[&str] = &[
+    "vendor",
+    "target",
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    ".gitmodules",
+];
+
+/// Render a depth-limited project tree from `git ls-files`. Honors .gitignore, leaves submodules
+/// unexpanded. Falls back to a shallow directory walk outside a git repo.
+pub fn project_tree() -> String {
+    // Try git ls-files first (honors .gitignore automatically).
+    let git_output = std::process::Command::new("git")
+        .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+        .output();
+    if let Ok(output) = git_output {
+        if output.status.success() {
+            let files: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect();
+            if !files.is_empty() {
+                return build_tree_from_files(&files);
+            }
+        }
+    }
+    // Fallback: shallow walk of current directory.
+    build_tree_fallback()
+}
+
+/// Build a tree string from a list of file paths (from git ls-files).
+fn build_tree_from_files(files: &[String]) -> String {
+    // Simple tree builder: just render the file list as a tree structure.
+    let mut result = String::from(".\n");
+    let mut prev_dir = String::new();
+
+    for file in files {
+        let parts: Vec<&str> = file.split('/').collect();
+        let depth = parts.len().saturating_sub(1);
+        let name = parts.last().unwrap_or(&"");
+
+        if depth == 0 {
+            // Root-level file
+            let connector = "├── ";
+            result.push_str(&format!("{connector}{name}\n"));
+        } else {
+            // Nested file: show directory prefix if it changed
+            let dir = parts[..depth].join("/");
+            if dir != prev_dir {
+                for d in 0..depth {
+                    let prefix: String = "│   ".repeat(d);
+                    let dir_name = parts[d];
+                    if d == depth - 1 {
+                        result.push_str(&format!("{prefix}├── {dir_name}/\n"));
+                    }
+                }
+                prev_dir = dir;
+            }
+            let prefix: String = "│   ".repeat(depth.saturating_sub(1));
+            let connector = "├── ";
+            result.push_str(&format!("{prefix}{connector}{name}\n"));
+        }
+    }
+    result
+}
+
+/// Fallback tree builder when git is not available.
+fn build_tree_fallback() -> String {
+    let mut result = String::from(".\n");
+    if let Ok(entries) = std::fs::read_dir(".") {
+        let mut dirs: Vec<String> = Vec::new();
+        let mut files: Vec<String> = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                dirs.push(name);
+            } else {
+                files.push(name);
+            }
+        }
+        dirs.sort();
+        files.sort();
+        for (i, dir) in dirs.iter().enumerate() {
+            let is_last = i == dirs.len() - 1 && files.is_empty();
+            let connector = if is_last { "└── " } else { "├── " };
+            result.push_str(&format!("{connector}{dir}/\n"));
+        }
+        for (i, file) in files.iter().enumerate() {
+            let is_last = i == files.len() - 1;
+            let connector = if is_last { "└── " } else { "├── " };
+            result.push_str(&format!("{connector}{file}\n"));
+        }
+    }
+    result
 }
 
 /// Parse the JSON multi-category form into `(category, text)` pairs. Accepts a flat object
@@ -182,7 +329,10 @@ pub fn parse_json(s: &str) -> Result<Vec<(String, String)>, String> {
         serde_json::from_str(s).map_err(|e| format!("invalid JSON prompt: {e}"))?;
     let obj = match v.get("task").and_then(|t| t.as_object()) {
         Some(o) => o.clone(),
-        None => v.as_object().ok_or("JSON prompt must be an object")?.clone(),
+        None => v
+            .as_object()
+            .ok_or("JSON prompt must be an object")?
+            .clone(),
     };
     let pairs: Vec<(String, String)> = obj
         .iter()
@@ -196,6 +346,7 @@ pub fn parse_json(s: &str) -> Result<Vec<(String, String)>, String> {
 
 /// Fulfill a task: ask the model to decide between running a command or answering, then do it.
 /// `role_header` biases the decision (and is the role's persona); `cfg` carries the chosen model.
+/// `max_steps` limits how many command iterations the agent can run before forced to answer.
 /// Returns the exit code (0 for an answered task). Prints the real command output, or the answer,
 /// to stdout.
 pub fn fulfill(
@@ -204,6 +355,7 @@ pub fn fulfill(
     role_header: Option<&str>,
     mode: Mode,
     opts: &Options,
+    max_steps: usize,
 ) -> Result<i32, String> {
     // Generate for the shell we actually run on (see `exec_capture`): PowerShell on Windows, POSIX
     // bash elsewhere. Mismatching them is what makes a Windows run try to execute Linux commands.
@@ -224,11 +376,17 @@ git); never PowerShell or cmd syntax."
     // finishes with an ANALYZED answer — never a raw command dump. A failure is fed back to fix.
     let mut transcript = String::new();
     let mut seen: Vec<String> = Vec::new();
-    for _ in 0..MAX_STEPS {
+    let mut failed: Vec<(String, String)> = Vec::new(); // (cmd, error) pairs
+    for step in 0..max_steps {
         let user = if transcript.is_empty() {
             task.to_string()
         } else {
-            format!("Request: {task}\n\nCommands run so far:\n{transcript}\nGather more if needed, else answer.")
+            let fix_hint = if let Some((_last_cmd, last_err)) = failed.last() {
+                format!("\nThe last command failed: {last_err}\nTry a different approach to avoid the same error.")
+            } else {
+                String::new()
+            };
+            format!("Request: {task}\n\nCommands run so far:\n{transcript}{fix_hint}\nGather more if needed, else answer.")
         };
         match parse_decision(&one_call(cfg, &system, &user, mode, false)?) {
             Decision::Answer(text) => {
@@ -237,7 +395,16 @@ git); never PowerShell or cmd syntax."
             }
             // A weak model loops, re-running a command it already ran. That yields no new info, so
             // break to the forced answer instead of spinning.
-            Decision::Run { cmd, .. } if seen.contains(&cmd) => break,
+            Decision::Run { cmd, .. } if seen.contains(&cmd) => {
+                // If the command failed before, give the model one more chance with a hint.
+                if failed.iter().any(|(c, _)| *c == cmd) && step < max_steps - 1 {
+                    transcript.push_str(&format!(
+                        "$ {cmd}\n(already failed — try a different command)\n\n"
+                    ));
+                    continue;
+                }
+                break;
+            }
             Decision::Run { say, cmd } => {
                 say_step(say.as_deref(), mode); // the model's own "let me check…" narration
                 seen.push(cmd.clone());
@@ -250,7 +417,13 @@ git); never PowerShell or cmd syntax."
                     let _ = writeln!(std::io::stderr(), "$ {cmd}"); // safe → show what runs
                 }
                 let (code, out) = exec_capture(&cmd, opts, mode)?;
-                transcript.push_str(&format!("$ {cmd}\n(exit {code})\n{}\n\n", trunc(&out, 1500)));
+                if code != 0 {
+                    failed.push((cmd.clone(), format!("exit {code}: {}", trunc(&out, 200))));
+                }
+                transcript.push_str(&format!(
+                    "$ {cmd}\n(exit {code})\n{}\n\n",
+                    trunc(&out, 1500)
+                ));
             }
         }
     }
@@ -276,7 +449,13 @@ fn say_step(say: Option<&str>, mode: Mode) {
 const SAY_COLOR: &str = "\x1b[38;5;153m";
 
 // Max commands the model may run to gather info before it must give a final answer.
-const MAX_STEPS: usize = 6;
+pub const MAX_STEPS: usize = 6;
+
+/// Maximum number of retry attempts for transient LLM failures.
+const MAX_RETRIES: usize = 3;
+
+/// Initial backoff duration in milliseconds.
+const INITIAL_BACKOFF_MS: u64 = 500;
 
 /// Print an answer to stdout. User mode renders markdown to ANSI (headers, lists, syntax-highlighted
 /// code blocks) so it reads in a terminal instead of showing raw ``` fences; Model mode prints the
@@ -299,7 +478,10 @@ fn print_answer(text: &str, mode: Mode) {
 enum Decision {
     /// Run a command to gather info (the loop continues and feeds the output back). `say` is the
     /// model's own one-line narration of what it's about to do, shown to a human before the command.
-    Run { say: Option<String>, cmd: String },
+    Run {
+        say: Option<String>,
+        cmd: String,
+    },
     Answer(String),
 }
 
@@ -311,13 +493,21 @@ fn parse_decision(content: &str) -> Decision {
     // prose). Parse the FIRST complete object from the first `{` — a span of first-`{`..last-`}`
     // would glue multiple objects into invalid JSON and lose the decision entirely.
     if let Some(a) = content.find('{') {
-        let mut objs = serde_json::Deserializer::from_str(&content[a..]).into_iter::<serde_json::Value>();
+        let mut objs =
+            serde_json::Deserializer::from_str(&content[a..]).into_iter::<serde_json::Value>();
         if let Some(Ok(v)) = objs.next() {
-            let say = v.get("say").and_then(|x| x.as_str()).map(str::trim)
-                .filter(|s| !s.is_empty()).map(String::from);
+            let say = v
+                .get("say")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from);
             if let Some(cmd) = v.get("run").and_then(|x| x.as_str()) {
                 if !cmd.trim().is_empty() {
-                    return Decision::Run { say, cmd: cmd.trim().to_string() };
+                    return Decision::Run {
+                        say,
+                        cmd: cmd.trim().to_string(),
+                    };
                 }
             }
             if let Some(ans) = v.get("answer").and_then(|x| x.as_str()) {
@@ -338,7 +528,10 @@ fn exec_capture(cmd: &str, opts: &Options, mode: Mode) -> Result<(i32, String), 
     // and bash mid-pipeline failures otherwise pass silently) — that's what drives the fix retry.
     let (tmp, run_line, content) = if cfg!(windows) {
         let p = std::env::temp_dir().join(format!("tokex-task-{pid}.ps1"));
-        let line = format!("powershell -NoProfile -ExecutionPolicy Bypass -File {}", p.display());
+        let line = format!(
+            "powershell -NoProfile -ExecutionPolicy Bypass -File {}",
+            p.display()
+        );
         (p, line, format!("$ErrorActionPreference = 'Stop'\n{cmd}\n"))
     } else {
         let p = std::env::temp_dir().join(format!("tokex-task-{pid}.sh"));
@@ -347,10 +540,21 @@ fn exec_capture(cmd: &str, opts: &Options, mode: Mode) -> Result<(i32, String), 
     };
     std::fs::write(&tmp, content).map_err(|e| format!("temp script: {e}"))?;
     // ponytail: temp paths have no spaces, so the unquoted path is safe; quote only if that breaks.
-    let exec = Options { raw: true, footer: false, llm_on_failure: false, ..*opts };
+    let exec = Options {
+        raw: true,
+        footer: false,
+        llm_on_failure: false,
+        ..*opts
+    };
     // Capture every line, and in User mode show the last 5 live in a ```bash viewport (see TailView).
     let mut view = TailView::new(mode);
-    let result = orchestrate::run(&Intent::from_command(run_line), &mut view, &mut std::io::sink(), None, &exec);
+    let result = orchestrate::run(
+        &Intent::from_command(run_line),
+        &mut view,
+        &mut std::io::sink(),
+        None,
+        &exec,
+    );
     let buf = view.finish();
     let _ = std::fs::remove_file(&tmp);
     let code = result?;
@@ -439,8 +643,14 @@ fn render_block(tail: &VecDeque<String>) -> String {
         md.push('\n');
     }
     md.push_str("```");
-    let opts = markdown_to_ansi::Options { syntax_highlight: true, width: Some(w + 1), code_bg: true };
-    markdown_to_ansi::render(&md, &opts).trim_end_matches('\n').to_string()
+    let opts = markdown_to_ansi::Options {
+        syntax_highlight: true,
+        width: Some(w + 1),
+        code_bg: true,
+    };
+    markdown_to_ansi::render(&md, &opts)
+        .trim_end_matches('\n')
+        .to_string()
 }
 
 impl Write for TailView {
@@ -466,7 +676,11 @@ impl Write for TailView {
 }
 
 fn term_width() -> usize {
-    std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()).filter(|w| *w > 0).unwrap_or(80)
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|c| c.parse().ok())
+        .filter(|w| *w > 0)
+        .unwrap_or(80)
 }
 
 /// Clip a line to `max` display chars (UTF-8 safe) so it can't wrap and break the cursor math.
@@ -474,7 +688,10 @@ fn clip(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>())
+        format!(
+            "{}…",
+            s.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
     }
 }
 
@@ -488,7 +705,9 @@ fn cap_lines(s: &str, max: usize) -> String {
     for (i, line) in s.lines().enumerate() {
         if i >= max {
             let extra = s.lines().count() - max;
-            out.push_str(&format!("… ({extra} more lines truncated — narrow the command)\n"));
+            out.push_str(&format!(
+                "… ({extra} more lines truncated — narrow the command)\n"
+            ));
             break;
         }
         out.push_str(line);
@@ -499,22 +718,13 @@ fn cap_lines(s: &str, max: usize) -> String {
 
 /// A command is risky (→ confirm) if it can delete, overwrite, fetch+run, escalate, or mutate the
 /// repo/system. Read-only inspection (Get-ChildItem/find/ls/cat/grep/git status…) is safe and runs
-/// unprompted. Covers both POSIX tools and PowerShell cmdlets.
-/// ponytail: substring blocklist, not a parser; err toward asking on anything that writes.
+/// unprompted. Uses the permission module for pattern-based evaluation.
 fn is_risky(cmd: &str) -> bool {
-    const RISKY: &[&str] = &[
-        // POSIX
-        "rm ", "rmdir", "mv ", "dd ", "mkfs", "chmod", "chown", "kill", "shutdown", "reboot",
-        "sudo", " su ", "truncate", "del ", "format ", "fdisk", ">", "tee ", "curl", "wget",
-        "git push", "git reset", "git clean", "git checkout", "git rebase", "git commit",
-        "install", "uninstall", "apt", "brew",
-        // PowerShell cmdlets
-        "remove-item", "move-item", "rename-item", "set-content", "add-content", "out-file",
-        "new-item", "clear-content", "stop-process", "invoke-webrequest", "invoke-expression",
-        "iex ", "start-process",
-    ];
-    let c = format!(" {} ", cmd.to_ascii_lowercase());
-    RISKY.iter().any(|p| c.contains(p))
+    let perms = crate::permission::Permissions::default();
+    matches!(
+        perms.evaluate("shell", Some(cmd)),
+        crate::permission::Action::Ask | crate::permission::Action::Deny
+    )
 }
 
 /// Confirm a risky command before running. Default No: empty line, EOF (no TTY / no input), or a
@@ -544,7 +754,13 @@ fn trunc(s: &str, max: usize) -> String {
     }
 }
 
-fn one_call(cfg: &LlmConfig, system: &str, user: &str, mode: Mode, live: bool) -> Result<String, String> {
+fn one_call(
+    cfg: &LlmConfig,
+    system: &str,
+    user: &str,
+    mode: Mode,
+    live: bool,
+) -> Result<String, String> {
     let body = serde_json::json!({
         "model": cfg.model,
         "temperature": 0.2,
@@ -574,12 +790,53 @@ fn one_call(cfg: &LlmConfig, system: &str, user: &str, mode: Mode, live: bool) -
     let label = phrases[random_index];
 
     let spinner = (mode == Mode::User).then(|| Spinner::start(label));
-    let resp = ureq::post(&cfg.url)
-        .set("Authorization", &format!("Bearer {}", cfg.key))
-        .set("Content-Type", "application/json")
-        .send_json(body)
-        .map_err(|e| format!("request failed: {e}"))?;
-    stream(resp, live, spinner)
+
+    // Retry with exponential backoff for transient failures.
+    let mut last_err = String::new();
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            let backoff = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
+            if let Mode::User = mode {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "  (retry {attempt}/{MAX_RETRIES} after {backoff}ms)"
+                );
+            }
+            thread::sleep(Duration::from_millis(backoff));
+        }
+        match ureq::post(&cfg.url)
+            .set("Authorization", &format!("Bearer {}", cfg.key))
+            .set("Content-Type", "application/json")
+            .send_json(body.clone())
+        {
+            Ok(resp) => {
+                // Handle rate limiting (429) and server errors (5xx) as retryable.
+                let status = resp.status();
+                if status == 429 || (status >= 500 && status < 600) {
+                    last_err = format!("HTTP {status}");
+                    continue;
+                }
+                return stream(resp, live, spinner);
+            }
+            Err(ureq::Error::Status(status, _resp)) => {
+                // ureq wraps non-2xx responses as errors.
+                if status == 429 || (status >= 500 && status < 600) {
+                    last_err = format!("HTTP {status}");
+                    continue;
+                }
+                // Non-retryable client error (4xx except 429): fail immediately.
+                return Err(format!("request failed: HTTP {status}"));
+            }
+            Err(e) => {
+                // Network errors are retryable.
+                last_err = format!("{e}");
+                continue;
+            }
+        }
+    }
+    Err(format!(
+        "request failed after {MAX_RETRIES} retries: {last_err}"
+    ))
 }
 
 /// Read an OpenAI-compatible SSE stream and accumulate the answer `content`. When `live`, tokens
@@ -587,7 +844,11 @@ fn one_call(cfg: &LlmConfig, system: &str, user: &str, mode: Mode, live: bool) -
 /// otherwise the spinner covers the whole call and nothing is shown — used for the decision turns,
 /// whose raw `{"run":…}` JSON should never reach the user (the model's `say` narrates instead).
 /// `content` is always accumulated and returned. stdout is untouched.
-fn stream(resp: ureq::Response, live: bool, mut spinner: Option<Spinner>) -> Result<String, String> {
+fn stream(
+    resp: ureq::Response,
+    live: bool,
+    mut spinner: Option<Spinner>,
+) -> Result<String, String> {
     let mut err = std::io::stderr();
     let reader = BufReader::new(resp.into_reader());
     let mut content = String::new();
@@ -651,33 +912,40 @@ impl Spinner {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let label = label.to_string();
-        
+
         let handle = thread::spawn(move || {
             let mut err = std::io::stderr();
-            
+
             // 1. HIDE THE CURSOR before the animation starts loop
             let _ = write!(err, "\x1b[?25l");
             let _ = err.flush();
-            
+
             let mut i = 0;
             while !flag.load(Ordering::Relaxed) {
                 let start = std::time::Instant::now();
-                
-                let _ = write!(err, "\r{SAY_COLOR}{}\x1b[0m {label}...", SPIN_FRAMES[i % SPIN_FRAMES.len()]);
+
+                let _ = write!(
+                    err,
+                    "\r{SAY_COLOR}{}\x1b[0m {label}...",
+                    SPIN_FRAMES[i % SPIN_FRAMES.len()]
+                );
                 let _ = err.flush();
                 i += 1;
-                
+
                 while !flag.load(Ordering::Relaxed) && start.elapsed() < SPIN_FRAME {
                     thread::sleep(Duration::from_millis(10));
                 }
             }
-            
+
             // 2. CLEANUP: Clear the line AND SHOW THE CURSOR again (\x1b[?25h)
-            let _ = write!(err, "\r\x1b[K"); 
+            let _ = write!(err, "\r\x1b[K");
             let _ = err.flush();
         });
-        
-        Spinner { stop, handle: Some(handle) }
+
+        Spinner {
+            stop,
+            handle: Some(handle),
+        }
     }
 }
 
@@ -723,7 +991,10 @@ mod tests {
         let flat = parse_json(r#"{"plan-stack":"media player","theme":"glass"}"#).unwrap();
         assert_eq!(flat.len(), 2);
         let wrapped = parse_json(r#"{"task":{"plan-stack":"media player"}}"#).unwrap();
-        assert_eq!(wrapped, vec![("plan-stack".to_string(), "media player".to_string())]);
+        assert_eq!(
+            wrapped,
+            vec![("plan-stack".to_string(), "media player".to_string())]
+        );
         assert!(parse_json("[]").is_err());
         assert!(parse_json("{}").is_err());
     }
@@ -753,7 +1024,8 @@ mod tests {
 
     #[test]
     fn parse_decision_run_answer_and_fallback() {
-        match parse_decision(r#"{"run":"find . -name Cargo.toml | wc -l","say":"counting crates"}"#) {
+        match parse_decision(r#"{"run":"find . -name Cargo.toml | wc -l","say":"counting crates"}"#)
+        {
             Decision::Run { cmd, say } => {
                 assert_eq!(cmd, "find . -name Cargo.toml | wc -l");
                 assert_eq!(say.as_deref(), Some("counting crates"));
@@ -786,7 +1058,10 @@ mod tests {
     #[test]
     fn roles_map_to_models() {
         assert_eq!(role("planner").unwrap().0, "z-ai/glm-5.1");
-        assert_eq!(role("orchestrator").unwrap().0, "nvidia/nemotron-3-ultra-550b-a55b");
+        assert_eq!(
+            role("orchestrator").unwrap().0,
+            "nvidia/nemotron-3-ultra-550b-a55b"
+        );
         assert!(role("coder").is_some());
         assert!(role("assistant").is_some());
         assert!(role("nope").is_none());

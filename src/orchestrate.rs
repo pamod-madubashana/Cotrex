@@ -30,7 +30,6 @@ enum Msg {
     Done,
 }
 
-
 /// Execution options derived from config modes.
 pub struct Options {
     /// compression=off: bypass rtk filtering (raw `rtk run -c`).
@@ -57,7 +56,11 @@ pub fn run(
 ) -> Result<i32, String> {
     intent.validate()?;
     let mut args = if opts.raw {
-        vec!["run".to_string(), "-c".to_string(), intent.command.trim().to_string()]
+        vec![
+            "run".to_string(),
+            "-c".to_string(),
+            intent.command.trim().to_string(),
+        ]
     } else {
         intent.to_rtk_args()
     };
@@ -96,8 +99,14 @@ pub fn run(
         })
     };
 
-    let out = child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>);
-    let err = child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>);
+    let out = child
+        .stdout
+        .take()
+        .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>);
+    let err = child
+        .stderr
+        .take()
+        .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>);
     reader(out, tx.clone());
     reader(err, tx);
 
@@ -123,10 +132,18 @@ pub fn run(
         }
     }
 
-    let code = child.wait().map_err(|e| format!("wait failed: {e}"))?.code().unwrap_or(-1);
+    let code = child
+        .wait()
+        .map_err(|e| format!("wait failed: {e}"))?
+        .code()
+        .unwrap_or(-1);
     let status = if code == 0 { "ok" } else { "failed" };
     if opts.footer {
-        let result = Result_ { kind: "result", status, code };
+        let result = Result_ {
+            kind: "result",
+            status,
+            code,
+        };
         writeln!(machine, "{}", serde_json::to_string(&result).unwrap()).ok();
     }
     writeln!(human, "‹ {status} (exit {code}, {errors} error line(s))").ok();
