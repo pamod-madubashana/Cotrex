@@ -109,10 +109,13 @@ pub fn run_setup() -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .to_string();
 
-    let graph_auto = inquire::Confirm::new("Auto-update the graphify code map after code changes?")
-        .with_default(true)
-        .prompt()
-        .map_err(|e| e.to_string())?;
+    let graph_auto = Select::new(
+        "Auto-update the graphify code map after code changes?",
+        vec!["Yes", "No"],
+    )
+    .prompt()
+    .map_err(|e| e.to_string())?
+        == "Yes";
 
     let agent = if graph_auto {
         let choice = Select::new(
