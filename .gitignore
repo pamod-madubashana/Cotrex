@@ -5,3 +5,4 @@ graphify-out/
 docs/node_modules
 docs/build
 docs/.docusaurus
+.opencode/

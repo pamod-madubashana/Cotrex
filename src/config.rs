@@ -79,49 +79,11 @@ pub fn save(cfg: &Config) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Preset (base URL, default model) for each known provider.
-fn preset(provider: &str) -> (&'static str, &'static str) {
-    match provider {
-        "Groq" => (
-            "https://api.groq.com/openai/v1/chat/completions",
-            "llama-3.1-8b-instant",
-        ),
-        "OpenRouter" => (
-            "https://openrouter.ai/api/v1/chat/completions",
-            "meta-llama/llama-3.1-8b-instruct:free",
-        ),
-        "NVIDIA NIM" => (
-            "https://integrate.api.nvidia.com/v1/chat/completions",
-            "meta/llama-3.1-8b-instruct",
-        ),
-        _ => ("", "meta-llama/llama-3.1-8b-instruct"),
-    }
-}
-
 /// Interactive setup. Pretty prompts via `inquire`; writes the config file.
 pub fn run_setup() -> Result<(), String> {
     use inquire::{Password, PasswordDisplayMode, Select, Text};
 
-    let provider = Select::new(
-        "LLM provider",
-        vec!["Groq", "OpenRouter", "NVIDIA NIM", "Custom"],
-    )
-    .prompt()
-    .map_err(|e| e.to_string())?;
-    let (preset_url, preset_model) = preset(provider);
-
-    let llm_url = if provider == "Custom" {
-        Text::new("API base URL (OpenAI-compatible /chat/completions)")
-            .prompt()
-            .map_err(|e| e.to_string())?
-    } else {
-        preset_url.to_string()
-    };
-    let llm_model = Text::new("Model")
-        .with_default(preset_model)
-        .prompt()
-        .map_err(|e| e.to_string())?;
-    let llm_key = Password::new("API key")
+    let llm_key = Password::new("NVIDIA NIM API key")
         .with_display_mode(PasswordDisplayMode::Masked)
         .without_confirmation()
         .prompt()
@@ -153,7 +115,7 @@ pub fn run_setup() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     let agent = if graph_auto {
-        Text::new("Which agent for the graphify skill? (e.g. claude, codex, cursor, gemini; blank = auto-detect)")
+        Text::new("Which agent for the graphify skill? (e.g. claude, codex, cursor, opencode; blank = auto-detect)")
             .with_default("")
             .prompt()
             .map_err(|e| e.to_string())?
@@ -164,17 +126,17 @@ pub fn run_setup() -> Result<(), String> {
     };
 
     let cfg = Config {
-        provider: provider.to_string(),
-        llm_url,
+        provider: "NVIDIA NIM".into(),
+        llm_url: "https://integrate.api.nvidia.com/v1/chat/completions".into(),
         llm_key,
-        llm_model,
+        llm_model: "meta/llama-3.1-8b-instruct".into(),
         compression,
         rtk_verbosity,
         graph_auto,
         agent,
     };
     let path = save(&cfg)?;
-    println!("Saved config to {}", path.display());
+    eprintln!("Saved config to {}", path.display());
     Ok(())
 }
 

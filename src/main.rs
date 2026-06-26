@@ -62,7 +62,8 @@ enum Cmd {
     /// Install Tokex skills into the current project for a specific agent.
     Install {
         /// Agent name (opencode, claude, codex, cursor, gemini, windsurf, aider, continue, cline).
-        agent: String,
+        /// Omit to list installed skills.
+        agent: Option<String>,
     },
 }
 
@@ -163,6 +164,7 @@ fn main() {
             }
             // Bootstrap graphify (install + register skill for the chosen agent + build map) now.
             if config::load().graph_auto {
+                let _spinner = prompt::Spinner::start("bootstrapping graphify");
                 if let Err(e) = graphify::update_blocking_after_setup() {
                     eprintln!("tokex: graphify setup skipped: {e}");
                 }
@@ -188,9 +190,19 @@ fn main() {
             return;
         }
         Some(Cmd::Install { agent }) => {
-            if let Err(e) = install_agent::install_agent(&agent) {
-                eprintln!("tokex: install failed: {e}");
-                exit(1);
+            match agent {
+                Some(a) => {
+                    if let Err(e) = install_agent::install_agent(&a) {
+                        eprintln!("tokex: install failed: {e}");
+                        exit(1);
+                    }
+                }
+                None => {
+                    if let Err(e) = install_agent::list_installed() {
+                        eprintln!("tokex: {e}");
+                        exit(1);
+                    }
+                }
             }
             return;
         }

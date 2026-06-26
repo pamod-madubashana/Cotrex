@@ -897,7 +897,7 @@ fn stream(
 /// spin smooth; the glyph is tinted to match the agent's narration. ponytail: stdlib `\r`+flush, no
 /// crossterm — a one-line redraw needs no alternate screen or raw mode (those would wipe the
 /// inline-streamed output). Braille assumes a modern terminal; fine on Windows Terminal.
-struct Spinner {
+pub struct Spinner {
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
 }
@@ -908,7 +908,7 @@ const SPIN_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦"
 const SPIN_FRAME: Duration = Duration::from_millis(80);
 
 impl Spinner {
-    fn start(label: &str) -> Self {
+    pub fn start(label: &str) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let label = label.to_string();

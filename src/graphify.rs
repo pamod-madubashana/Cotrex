@@ -237,25 +237,27 @@ pub fn clear_skill_marker() {
 /// `tokex graph` and the post-`setup` bootstrap: install the package, register the skill for the
 /// agent, and refresh the map. Blocking, with visible output.
 pub fn update_blocking() -> Result<(), String> {
-    update_blocking_with_prompt(true)
+    update_blocking_with_prompt(true, true)
 }
 
 /// Post-setup bootstrap: setup already asked for the agent. If the user left it blank and
 /// auto-detection cannot identify the agent, skip skill registration without asking again.
 pub fn update_blocking_after_setup() -> Result<(), String> {
-    update_blocking_with_prompt(false)
+    update_blocking_with_prompt(false, false)
 }
 
-fn update_blocking_with_prompt(prompt_when_unknown: bool) -> Result<(), String> {
+fn update_blocking_with_prompt(prompt_when_unknown: bool, verbose: bool) -> Result<(), String> {
     let cwd = current_project_dir().ok_or_else(|| {
         "not in a project directory; skipping graphify code-map refresh".to_string()
     })?;
     let py = py();
-    if !ensure_package(py, true) {
+    if !ensure_package(py, verbose) {
         return Err("graphify unavailable — need Python + pip to install graphifyy".into());
     }
-    register_skill(py, true, prompt_when_unknown);
-    eprintln!("tokex: refreshing graphify code map in {}", cwd.display());
+    register_skill(py, verbose, prompt_when_unknown);
+    if verbose {
+        eprintln!("tokex: refreshing graphify code map in {}", cwd.display());
+    }
     if run_inherit(py, &["-m", "graphify", "update", "."]) {
         Ok(())
     } else {
