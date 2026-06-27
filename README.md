@@ -10,6 +10,11 @@
   <img src="https://img.shields.io/badge/built_with-Rust-orange.svg" alt="Built with Rust">
   <img src="https://img.shields.io/badge/status-MVP-yellow.svg" alt="Status: MVP">
   <img src="https://img.shields.io/badge/license-TBD-lightgrey.svg" alt="License: TBD">
+  <img src="https://img.shields.io/badge/MCP-compatible-blue.svg" alt="MCP Compatible">
+  <img src="https://img.shields.io/github/actions/workflow/status/pamod-madubashana/Cotrex/ci.yml?branch=main&label=CI" alt="CI">
+  <img src="https://img.shields.io/github/v/release/pamod-madubashana/Cotrex" alt="Latest Release">
+  <img src="https://img.shields.io/github/downloads/pamod-madubashana/Cotrex/total" alt="Downloads">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="Platforms">
 </p>
 
 <p align="center">
