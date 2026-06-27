@@ -81,15 +81,31 @@ Installed by `cotrex install {agent}`. Reinstall with `cotrex install {agent}`.
     )
 }
 
-const OPENCODE_USAGE_PLUGIN: &str = r#"// cotrex-usage OpenCode plugin
-// Shows token usage and cost savings in the sidebar.
+const OPENCODE_USAGE_PLUGIN: &str = r#"/** @jsxImportSource @opentui/solid */
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
+interface UsageEntry {
+  command: string;
+  tokens_in: number;
+  tokens_out: number;
+  exit_code: number;
+  via: string;
+}
+
+interface UsageStats {
+  total_runs: number;
+  total_tokens_in: number;
+  total_tokens_out: number;
+  total_input_bytes: number;
+  total_output_bytes: number;
+  entries: UsageEntry[];
+}
+
 const PAID_MODEL_COST_PER_TOKEN = 3.0 / 1_000_000.0;
 
-function readUsage() {
+function readUsage(): UsageStats | null {
   const paths = [
     join(homedir(), ".local", "share", "cotrex", "usage.json"),
     join(homedir(), ".config", "cotrex", "usage.json"),
@@ -105,49 +121,64 @@ function readUsage() {
   return null;
 }
 
-function formatNum(n) {
+function formatNum(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 }
 
-function formatCost(cost) {
+function formatCost(cost: number): string {
   if (cost < 0.01) return `$${cost.toFixed(4)}`;
   if (cost < 1.0) return `$${cost.toFixed(3)}`;
   return `$${cost.toFixed(2)}`;
 }
 
-export default async function () {
-  return {
-    hooks: {
-      sidebar: () => {
+export const CotrexUsagePlugin = async (ctx: any) => {
+  const { TuiSlotPlugin } = ctx;
+  const slot: TuiSlotPlugin = {
+    order: 150,
+    slots: {
+      sidebar_content(_ctx: any, _value: any) {
         const usage = readUsage();
-        if (!usage || usage.total_runs === 0) return [];
+        if (!usage || usage.total_runs === 0) return null;
 
         const cost = usage.total_tokens_out * PAID_MODEL_COST_PER_TOKEN;
         const recent = usage.entries.slice(-3).reverse();
-        const items = [
-          { label: "Runs", value: formatNum(usage.total_runs) },
-          { label: "Tokens out", value: formatNum(usage.total_tokens_out) },
-          { label: "Saved", value: formatCost(cost), status: "success" },
-          { label: "Model", value: "$3/1M tokens" },
-        ];
 
-        for (const e of recent) {
-          const cmd = e.command.slice(0, 24) + (e.command.length > 24 ? ".." : "");
-          items.push({ label: cmd, value: String(e.tokens_out) });
-        }
-
-        return [
-          {
-            id: "cotrex-usage",
-            title: "Cotrex Usage",
-            items,
-          },
-        ];
+        return (
+          <box
+            border
+            borderColor="gray"
+            flexDirection="column"
+            gap={1}
+            paddingTop={1}
+            paddingBottom={1}
+            paddingLeft={2}
+            paddingRight={2}
+          >
+            <text>
+              <b>Cotrex Usage</b>
+            </text>
+            <text> Runs: {formatNum(usage.total_runs)}</text>
+            <text> Tokens: {formatNum(usage.total_tokens_out)} out</text>
+            <text color="green"> Saved: {formatCost(cost)}</text>
+            <text dim> vs paid model ($3/1M tokens)</text>
+            {recent.length > 0 && (
+              <>
+                <text dim> Recent:</text>
+                {recent.map((e: UsageEntry) => (
+                  <text>
+                    {" "}{e.command.slice(0, 22)}{e.command.length > 22 ? ".." : ""} [{e.tokens_out}]
+                  </text>
+                ))}
+              </>
+            )}
+          </box>
+        );
       },
     },
   };
-}
+  return { tui: { slots: [slot] } };
+};
 "#;
 
 fn cotrex_skill(agent: &str, project_name: &str) -> String {
@@ -359,13 +390,13 @@ pub fn install_agent(agent: &str) -> Result<(), String> {
         fs::create_dir_all(&plugins_dir)
             .map_err(|e| format!("failed to create {}: {e}", plugins_dir.display()))?;
 
-        fs::write(plugins_dir.join("cotrex-usage.js"), OPENCODE_USAGE_PLUGIN)
+        fs::write(plugins_dir.join("cotrex-usage.tsx"), OPENCODE_USAGE_PLUGIN)
             .map_err(|e| format!("failed to write cotrex usage plugin: {e}"))?;
 
-        // Add plugin to .opencode/opencode.json (not tui.json)
-        let opencode_config = opencode_dir.join("opencode.json");
-        let mut config: serde_json::Value = if opencode_config.exists() {
-            fs::read_to_string(&opencode_config)
+        // TUI plugins go in tui.json, not opencode.json
+        let tui_config = opencode_dir.join("tui.json");
+        let mut tui: serde_json::Value = if tui_config.exists() {
+            fs::read_to_string(&tui_config)
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_else(|| serde_json::json!({}))
@@ -373,22 +404,49 @@ pub fn install_agent(agent: &str) -> Result<(), String> {
             serde_json::json!({})
         };
 
-        let plugins = config
+        let plugins = tui
             .as_object_mut()
             .unwrap()
             .entry("plugin")
             .or_insert_with(|| serde_json::json!([]));
 
-        let plugin_path = "./plugins/cotrex-usage.js";
+        let plugin_path = "./plugins/cotrex-usage.tsx";
         if let Some(arr) = plugins.as_array_mut() {
-            if !arr.iter().any(|p| p.as_str() == Some(plugin_path)) {
-                arr.push(serde_json::json!(plugin_path));
-            }
+            // Remove old entries (string or tuple format)
+            arr.retain(|p| {
+                let path = match p {
+                    serde_json::Value::String(s) => s.as_str(),
+                    serde_json::Value::Array(a) => a.first().and_then(|v| v.as_str()).unwrap_or(""),
+                    _ => "",
+                };
+                !path.contains("cotrex-usage")
+            });
+            arr.push(serde_json::json!([plugin_path, {}]));
         }
 
-        let pretty = serde_json::to_string_pretty(&config).unwrap_or_default();
-        fs::write(&opencode_config, format!("{}\n", pretty))
-            .map_err(|e| format!("failed to write {}: {e}", opencode_config.display()))?;
+        let pretty = serde_json::to_string_pretty(&tui).unwrap_or_default();
+        fs::write(&tui_config, format!("{}\n", pretty))
+            .map_err(|e| format!("failed to write {}: {e}", tui_config.display()))?;
+
+        // Remove cotrex-usage from opencode.json if present
+        let opencode_config = opencode_dir.join("opencode.json");
+        if opencode_config.exists() {
+            if let Ok(content) = fs::read_to_string(&opencode_config) {
+                if let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(plugins) = config.get_mut("plugin").and_then(|p| p.as_array_mut()) {
+                        let before = plugins.len();
+                        plugins.retain(|p| {
+                            let path = p.as_str().unwrap_or("");
+                            !path.contains("cotrex-usage")
+                        });
+                        if plugins.len() != before {
+                            let pretty = serde_json::to_string_pretty(&config).unwrap_or_default();
+                            fs::write(&opencode_config, format!("{}\n", pretty)).ok();
+                        }
+                    }
+                }
+            }
+        }
 
         eprintln!(
             "cotrex: opencode sidebar plugin -> {}",
