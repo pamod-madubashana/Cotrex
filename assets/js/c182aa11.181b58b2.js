@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunkcotrex_docs=self.webpackChunkcotrex_docs||[]).push([[213],{7989(e){e.exports=JSON.parse('{"metadata":{"permalink":"/Cotrex/blog","page":1,"postsPerPage":10,"totalPages":1,"totalCount":0,"blogDescription":"Blog","blogTitle":"Blog"}}')}}]);

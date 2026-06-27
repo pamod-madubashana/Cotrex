@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunkcotrex_docs=self.webpackChunkcotrex_docs||[]).push([[472],{5513(e){e.exports=JSON.parse('{"title":"Recent posts","items":[]}')}}]);
