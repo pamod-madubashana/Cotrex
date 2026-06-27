@@ -81,36 +81,25 @@ Installed by `cotrex install {agent}`. Reinstall with `cotrex install {agent}`.
     )
 }
 
-const OPENCODE_USAGE_PLUGIN: &str = r#"/** @jsxImportSource @opentui/solid */
+// Built plugin: plugins/cotrex-usage/dist/tui.js
+// Rebuild with: cd plugins/cotrex-usage && bun install && bun run build
+const OPENCODE_USAGE_PLUGIN: &str = r#"// @bun
+// src/index.tsx
+import { memo as _$memo } from "@opentui/solid";
+import { createComponent as _$createComponent } from "@opentui/solid";
+import { insert as _$insert } from "@opentui/solid";
+import { createTextNode as _$createTextNode } from "@opentui/solid";
+import { insertNode as _$insertNode } from "@opentui/solid";
+import { setProp as _$setProp } from "@opentui/solid";
+import { createElement as _$createElement } from "@opentui/solid";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
-
-interface UsageEntry {
-  command: string;
-  tokens_in: number;
-  tokens_out: number;
-  exit_code: number;
-  via: string;
-}
-
-interface UsageStats {
-  total_runs: number;
-  total_tokens_in: number;
-  total_tokens_out: number;
-  total_input_bytes: number;
-  total_output_bytes: number;
-  entries: UsageEntry[];
-}
-
-const PAID_MODEL_COST_PER_TOKEN = 3.0 / 1_000_000.0;
-
-function readUsage(): UsageStats | null {
-  const paths = [
-    join(homedir(), ".local", "share", "cotrex", "usage.json"),
-    join(homedir(), ".config", "cotrex", "usage.json"),
-    join(process.cwd(), ".cotrex", "usage.json"),
-  ];
+import { createSignal, For, Show } from "solid-js";
+var PAID_MODEL_COST_PER_TOKEN = 3 / 1e6;
+var COLLAPSED_KEY = "cotrex-usage-sidebar.collapsed";
+function readUsage() {
+  const paths = [join(homedir(), ".local", "share", "cotrex", "usage.json"), join(homedir(), ".config", "cotrex", "usage.json"), join(process.cwd(), ".cotrex", "usage.json")];
   for (const p of paths) {
     try {
       if (existsSync(p)) {
@@ -120,64 +109,102 @@ function readUsage(): UsageStats | null {
   }
   return null;
 }
-
-function formatNum(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+function formatNum(n) {
+  if (n >= 1000)
+    return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 }
-
-function formatCost(cost: number): string {
-  if (cost < 0.01) return `$${cost.toFixed(4)}`;
-  if (cost < 1.0) return `$${cost.toFixed(3)}`;
+function formatCost(cost) {
+  if (cost < 0.01)
+    return `$${cost.toFixed(4)}`;
+  if (cost < 1)
+    return `$${cost.toFixed(3)}`;
   return `$${cost.toFixed(2)}`;
 }
-
-export const CotrexUsagePlugin = async (ctx: any) => {
-  const { TuiSlotPlugin } = ctx;
-  const slot: TuiSlotPlugin = {
+var tui = async (api) => {
+  const [collapsed, setCollapsed] = createSignal(Boolean(api.kv.get(COLLAPSED_KEY, false)));
+  const [usageVersion, setUsageVersion] = createSignal(0);
+  const toggleCollapsed = () => {
+    const next = !collapsed();
+    setCollapsed(next);
+    api.kv.set(COLLAPSED_KEY, next);
+  };
+  api.slots.register({
     order: 150,
     slots: {
-      sidebar_content(_ctx: any, _value: any) {
+      sidebar_content: (_ctx, _props) => {
+        usageVersion();
         const usage = readUsage();
-        if (!usage || usage.total_runs === 0) return null;
-
+        if (!usage || usage.total_runs === 0)
+          return null;
         const cost = usage.total_tokens_out * PAID_MODEL_COST_PER_TOKEN;
+        const saved = cost;
         const recent = usage.entries.slice(-3).reverse();
-
-        return (
-          <box
-            border
-            borderColor="gray"
-            flexDirection="column"
-            gap={1}
-            paddingTop={1}
-            paddingBottom={1}
-            paddingLeft={2}
-            paddingRight={2}
-          >
-            <text>
-              <b>Cotrex Usage</b>
-            </text>
-            <text> Runs: {formatNum(usage.total_runs)}</text>
-            <text> Tokens: {formatNum(usage.total_tokens_out)} out</text>
-            <text color="green"> Saved: {formatCost(cost)}</text>
-            <text dim> vs paid model ($3/1M tokens)</text>
-            {recent.length > 0 && (
-              <>
-                <text dim> Recent:</text>
-                {recent.map((e: UsageEntry) => (
-                  <text>
-                    {" "}{e.command.slice(0, 22)}{e.command.length > 22 ? ".." : ""} [{e.tokens_out}]
-                  </text>
-                ))}
-              </>
-            )}
-          </box>
-        );
-      },
-    },
-  };
-  return { tui: { slots: [slot] } };
+        return (() => {
+          var _el$ = _$createElement("box"), _el$2 = _$createElement("text"), _el$3 = _$createElement("b"), _el$5 = _$createElement("text"), _el$6 = _$createTextNode(` Runs: `), _el$7 = _$createElement("text"), _el$8 = _$createTextNode(` Tokens: `), _el$9 = _$createTextNode(` out`), _el$0 = _$createElement("text"), _el$1 = _$createTextNode(` Saved: `), _el$10 = _$createElement("text");
+          _$insertNode(_el$, _el$2);
+          _$insertNode(_el$, _el$5);
+          _$insertNode(_el$, _el$7);
+          _$insertNode(_el$, _el$0);
+          _$insertNode(_el$, _el$10);
+          _$setProp(_el$, "border", true);
+          _$setProp(_el$, "borderColor", "gray");
+          _$setProp(_el$, "flexDirection", "column");
+          _$setProp(_el$, "gap", 1);
+          _$setProp(_el$, "paddingTop", 1);
+          _$setProp(_el$, "paddingBottom", 1);
+          _$setProp(_el$, "paddingLeft", 2);
+          _$setProp(_el$, "paddingRight", 2);
+          _$insertNode(_el$2, _el$3);
+          _$insertNode(_el$3, _$createTextNode(`Cotrex Usage`));
+          _$insertNode(_el$5, _el$6);
+          _$insert(_el$5, () => formatNum(usage.total_runs), null);
+          _$insertNode(_el$7, _el$8);
+          _$insertNode(_el$7, _el$9);
+          _$insert(_el$7, () => formatNum(usage.total_tokens_out), _el$9);
+          _$insertNode(_el$0, _el$1);
+          _$setProp(_el$0, "color", "green");
+          _$insert(_el$0, () => formatCost(saved), null);
+          _$insertNode(_el$10, _$createTextNode(` vs paid model ($3/1M tokens)`));
+          _$setProp(_el$10, "dim", true);
+          _$insert(_el$, _$createComponent(Show, {
+            get when() {
+              return recent.length > 0;
+            },
+            get children() {
+              return [(() => {
+                var _el$12 = _$createElement("text");
+                _$insertNode(_el$12, _$createTextNode(` Recent:`));
+                _$setProp(_el$12, "dim", true);
+                return _el$12;
+              })(), _$createComponent(For, {
+                each: recent,
+                children: (e) => (() => {
+                  var _el$14 = _$createElement("text"), _el$15 = _$createTextNode(`  `), _el$16 = _$createTextNode(` [`), _el$17 = _$createTextNode(`]`);
+                  _$insertNode(_el$14, _el$15);
+                  _$insertNode(_el$14, _el$16);
+                  _$insertNode(_el$14, _el$17);
+                  _$insert(_el$14, () => e.command.slice(0, 22), _el$16);
+                  _$insert(_el$14, () => e.command.length > 22 ? ".." : "", _el$16);
+                  _$insert(_el$14, () => e.tokens_out, _el$17);
+                  return _el$14;
+                })()
+              })];
+            }
+          }), null);
+          return _el$;
+        })();
+      }
+    }
+  });
+};
+var plugin = {
+  id: "cotrex-usage-sidebar",
+  tui
+};
+var src_default = plugin;
+export {
+  src_default as default
 };
 "#;
 
@@ -383,25 +410,31 @@ pub fn install_agent(agent: &str) -> Result<(), String> {
 
     eprintln!("cotrex: project skills -> {}", project_skills.display());
 
-    // 3. For opencode: install the TUI sidebar usage plugin.
+    // 3. For opencode: install TUI sidebar usage plugin (global).
+    // TUI plugins must be built with Bun first (cd plugins/cotrex-usage && bun install && bun run build).
+    // They are registered in ~/.config/opencode/tui.json (global) and copied to ~/.config/opencode/plugins/.
     if agent_id == "opencode" {
-        let opencode_dir = project_dir.join(".opencode");
-        let plugins_dir = opencode_dir.join("plugins");
-        fs::create_dir_all(&plugins_dir)
-            .map_err(|e| format!("failed to create {}: {e}", plugins_dir.display()))?;
+        let home = dirs::home_dir().ok_or("could not find home directory")?;
+        let global_opencode = home.join(".config").join("opencode");
+        let global_plugins_dir = global_opencode.join("plugins");
+        fs::create_dir_all(&global_plugins_dir)
+            .map_err(|e| format!("failed to create {}: {e}", global_plugins_dir.display()))?;
 
-        fs::write(plugins_dir.join("cotrex-usage.tsx"), OPENCODE_USAGE_PLUGIN)
+        fs::write(global_plugins_dir.join("cotrex-usage.js"), OPENCODE_USAGE_PLUGIN)
             .map_err(|e| format!("failed to write cotrex usage plugin: {e}"))?;
 
-        // TUI plugins go in tui.json, not opencode.json
-        let tui_config = opencode_dir.join("tui.json");
+        // TUI plugins go in tui.json (global), not project-local
+        let tui_config = global_opencode.join("tui.json");
         let mut tui: serde_json::Value = if tui_config.exists() {
             fs::read_to_string(&tui_config)
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_else(|| serde_json::json!({}))
         } else {
-            serde_json::json!({})
+            serde_json::json!({
+                "$schema": "https://opencode.ai/tui.json",
+                "theme": "system"
+            })
         };
 
         let plugins = tui
@@ -410,9 +443,12 @@ pub fn install_agent(agent: &str) -> Result<(), String> {
             .entry("plugin")
             .or_insert_with(|| serde_json::json!([]));
 
-        let plugin_path = "./plugins/cotrex-usage.tsx";
+        // Plugin path uses forward slashes for cross-platform compat
+        let plugin_path = global_plugins_dir
+            .join("cotrex-usage.js")
+            .to_string_lossy()
+            .replace('\\', "/");
         if let Some(arr) = plugins.as_array_mut() {
-            // Remove old entries (string or tuple format)
             arr.retain(|p| {
                 let path = match p {
                     serde_json::Value::String(s) => s.as_str(),
@@ -421,36 +457,16 @@ pub fn install_agent(agent: &str) -> Result<(), String> {
                 };
                 !path.contains("cotrex-usage")
             });
-            arr.push(serde_json::json!([plugin_path, {}]));
+            arr.push(serde_json::json!(plugin_path));
         }
 
         let pretty = serde_json::to_string_pretty(&tui).unwrap_or_default();
         fs::write(&tui_config, format!("{}\n", pretty))
             .map_err(|e| format!("failed to write {}: {e}", tui_config.display()))?;
 
-        // Remove cotrex-usage from opencode.json if present
-        let opencode_config = opencode_dir.join("opencode.json");
-        if opencode_config.exists() {
-            if let Ok(content) = fs::read_to_string(&opencode_config) {
-                if let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(plugins) = config.get_mut("plugin").and_then(|p| p.as_array_mut()) {
-                        let before = plugins.len();
-                        plugins.retain(|p| {
-                            let path = p.as_str().unwrap_or("");
-                            !path.contains("cotrex-usage")
-                        });
-                        if plugins.len() != before {
-                            let pretty = serde_json::to_string_pretty(&config).unwrap_or_default();
-                            fs::write(&opencode_config, format!("{}\n", pretty)).ok();
-                        }
-                    }
-                }
-            }
-        }
-
         eprintln!(
             "cotrex: opencode sidebar plugin -> {}",
-            plugins_dir.display()
+            global_plugins_dir.display()
         );
 
         // 4. Add MCP server config to project opencode.json.
@@ -464,7 +480,6 @@ pub fn install_agent(agent: &str) -> Result<(), String> {
             serde_json::json!({})
         };
 
-        // Add mcp.cotrex if not present
         let mcp = config
             .as_object_mut()
             .unwrap()
@@ -480,7 +495,6 @@ pub fn install_agent(agent: &str) -> Result<(), String> {
                 }),
             );
 
-            // Write back
             let pretty = serde_json::to_string_pretty(&config).unwrap_or_default();
             fs::write(&project_config, format!("{}\n", pretty))
                 .map_err(|e| format!("failed to write {}: {e}", project_config.display()))?;
