@@ -2,27 +2,19 @@
 //! A deterministic RTK orchestration layer: normalize agent intent, forward to RTK, normalize
 //! the stream. Tokex does not own execution; RTK does.
 
+mod agent;
 mod config;
+mod core;
 mod graphify;
-mod install;
-mod install_agent;
-mod intent;
 mod llm;
-mod mcp;
-mod normalize;
-mod orchestrate;
-mod permission;
-mod prompt;
 mod script;
-mod tool;
-mod update;
 
 use std::io::{self, IsTerminal, Read};
 use std::process::exit;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
-use intent::Intent;
+use crate::core::intent::Intent;
 
 #[derive(Parser)]
 #[command(
@@ -95,19 +87,19 @@ fn main() {
     );
     let rest: &[String] = if model_mode { &args[2..] } else { &args[1..] };
     let mode = if model_mode {
-        prompt::Mode::Model
+        agent::prompt::Mode::Model
     } else {
-        prompt::Mode::User
+        agent::prompt::Mode::User
     };
 
     if let Some(first) = rest.first() {
         // Role: `tokex <role> "<task>"` — offload a task to a role's model, return its answer.
-        if prompt::role(first).is_some() {
+        if agent::prompt::role(first).is_some() {
             run_role(first, rest[1..].join(" ").trim(), mode);
         }
         // Otherwise, when the first arg isn't a subcommand/flag:
         //   several args -> a command (`tokex git status`), run through rtk
-        //   one arg      -> a prompt (`tokex "list all rust projects"`, see prompt::classify)
+        //   one arg      -> a prompt (`tokex "list all rust projects"`, see agent::prompt::classify)
         if is_passthrough(first) {
             if rest.len() >= 2 {
                 run_intent(Intent::from_command(rest.join(" ")));
@@ -135,7 +127,7 @@ fn main() {
         }
         Some(Cmd::Script { file }) => {
             let cfg = config::load();
-            let opts = orchestrate::Options {
+            let opts = core::orchestrate::Options {
                 raw: cfg.compression == "off",
                 ultra_compact: cfg.rtk_verbosity == "ultra-compact",
                 llm_on_failure: false, // scripts are verified by their diff, not a model insight
@@ -171,7 +163,7 @@ fn main() {
                 match graphify::setup_steps() {
                     Ok(steps) => {
                         for (label, step) in steps {
-                            let spinner = prompt::Spinner::start(label);
+                            let spinner = agent::prompt::Spinner::start(label);
                             if let Err(e) = step() {
                                 spinner.complete();
                                 eprintln!("tokex: {e}");
@@ -185,9 +177,9 @@ fn main() {
             }
             return;
         }
-        Some(Cmd::Mcp) => mcp::serve(),
+        Some(Cmd::Mcp) => llm::mcp::serve(),
         Some(Cmd::InstallRtk) => {
-            match install::install() {
+            match config::install::install() {
                 Ok(path) => println!("rtk installed at {}", path.display()),
                 Err(e) => {
                     eprintln!("tokex: install-rtk failed: {e}");
@@ -206,13 +198,13 @@ fn main() {
         Some(Cmd::Install { agent }) => {
             match agent {
                 Some(a) => {
-                    if let Err(e) = install_agent::install_agent(&a) {
+                    if let Err(e) = config::install_agent::install_agent(&a) {
                         eprintln!("tokex: install failed: {e}");
                         exit(1);
                     }
                 }
                 None => {
-                    if let Err(e) = install_agent::list_installed() {
+                    if let Err(e) = config::install_agent::list_installed() {
                         eprintln!("tokex: {e}");
                         exit(1);
                     }
@@ -221,7 +213,7 @@ fn main() {
             return;
         }
         Some(Cmd::Update) => {
-            if let Err(e) = update::run() {
+            if let Err(e) = config::update::run() {
                 eprintln!("tokex: update failed: {e}");
                 exit(1);
             }
@@ -264,7 +256,7 @@ fn run_intent(intent: Intent) {
         Some("-m") | Some("--model")
     );
 
-    let opts = orchestrate::Options {
+    let opts = core::orchestrate::Options {
         raw: cfg.compression == "off",
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
         llm_on_failure: cfg.compression == "llm" && !model_mode,
@@ -289,20 +281,21 @@ fn run_intent(intent: Intent) {
         // Model mode: capture all output silently, return one clean JSON result.
         let mut buf = Vec::new();
         let mut err_sink = io::sink();
-        let code = match orchestrate::run(&intent, &mut buf, &mut err_sink, llm_cfg.as_ref(), &opts)
-        {
-            Ok(c) => c,
-            Err(e) => {
-                let result = serde_json::json!({
-                    "type": "result",
-                    "status": "failed",
-                    "code": -1,
-                    "error": e,
-                });
-                println!("{result}");
-                exit(1);
-            }
-        };
+        let code =
+            match core::orchestrate::run(&intent, &mut buf, &mut err_sink, llm_cfg.as_ref(), &opts)
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    let result = serde_json::json!({
+                        "type": "result",
+                        "status": "failed",
+                        "code": -1,
+                        "error": e,
+                    });
+                    println!("{result}");
+                    exit(1);
+                }
+            };
         let output = String::from_utf8_lossy(&buf);
 
         // Group multi-line warnings/errors into single entries.
@@ -361,7 +354,7 @@ fn run_intent(intent: Intent) {
         // User mode: stream output live to stderr/stdout.
         let mut out = io::stdout();
         let mut err = io::stderr();
-        match orchestrate::run(&intent, &mut out, &mut err, llm_cfg.as_ref(), &opts) {
+        match core::orchestrate::run(&intent, &mut out, &mut err, llm_cfg.as_ref(), &opts) {
             Ok(code) => {
                 if cfg.graph_auto {
                     graphify::auto_update(&intent.command);
@@ -384,24 +377,24 @@ fn is_passthrough(first: &str) -> bool {
 
 /// Handle a single bare argument: a free-text task for the assistant agent (which runs commands or
 /// answers), or a `category: text` / JSON structured prompt.
-fn dispatch_one(arg: &str, mode: prompt::Mode) {
-    match prompt::classify(arg) {
+fn dispatch_one(arg: &str, mode: agent::prompt::Mode) {
+    match agent::prompt::classify(arg) {
         // No role given → default to the `assistant` role. The agent decides how to answer — run a
         // command (`git ls-files`/`tree`) when the task needs it, or just answer (a bare `hi`).
-        prompt::Dispatch::Prompt(task) => run_role("assistant", &task, mode),
-        prompt::Dispatch::Json(s) => match prompt::parse_json(&s) {
+        agent::prompt::Dispatch::Prompt(task) => run_role("assistant", &task, mode),
+        agent::prompt::Dispatch::Json(s) => match agent::prompt::parse_json(&s) {
             Ok(pairs) => run_prompt(pairs, mode),
             Err(e) => {
                 eprintln!("tokex: {e}");
                 exit(2);
             }
         },
-        prompt::Dispatch::Category(cat, text) => run_prompt(vec![(cat, text)], mode),
+        agent::prompt::Dispatch::Category(cat, text) => run_prompt(vec![(cat, text)], mode),
         // Structure request: short-circuit the model, render tree directly.
-        prompt::Dispatch::Structure => {
-            let tree = prompt::project_tree();
+        agent::prompt::Dispatch::Structure => {
+            let tree = agent::prompt::project_tree();
             match mode {
-                prompt::Mode::User => {
+                agent::prompt::Mode::User => {
                     let opts = markdown_to_ansi::Options {
                         syntax_highlight: true,
                         width: std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()),
@@ -412,7 +405,7 @@ fn dispatch_one(arg: &str, mode: prompt::Mode) {
                         markdown_to_ansi::render(&format!("```\n{tree}```"), &opts)
                     );
                 }
-                prompt::Mode::Model => println!("{tree}"),
+                agent::prompt::Mode::Model => println!("{tree}"),
             }
             exit(0);
         }
@@ -429,8 +422,8 @@ fn load_llm_or_exit(cfg: &config::Config) -> llm::LlmConfig {
     }
 }
 
-fn exec_opts(cfg: &config::Config) -> orchestrate::Options {
-    orchestrate::Options {
+fn exec_opts(cfg: &config::Config) -> core::orchestrate::Options {
+    core::orchestrate::Options {
         raw: cfg.compression == "off",
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
         llm_on_failure: false,
@@ -440,12 +433,12 @@ fn exec_opts(cfg: &config::Config) -> orchestrate::Options {
 
 /// Role: offload a task to a role-specific model. The model decides whether to run a command (real
 /// output) or answer; the role just picks which model and biases it with the role's persona.
-fn run_role(role: &str, task: &str, mode: prompt::Mode) -> ! {
+fn run_role(role: &str, task: &str, mode: agent::prompt::Mode) -> ! {
     if task.is_empty() {
         eprintln!("tokex: role '{role}' needs a task, e.g. tokex {role} \"...\"");
         exit(2);
     }
-    let (model, header, _role_mode, max_steps) = prompt::role(role).unwrap_or_else(|| {
+    let (model, header, _role_mode, max_steps) = agent::prompt::role(role).unwrap_or_else(|| {
         eprintln!("tokex: unknown role '{role}'");
         exit(2);
     });
@@ -458,13 +451,13 @@ fn fulfill(
     task: &str,
     model: &str,
     role_header: Option<&str>,
-    mode: prompt::Mode,
+    mode: agent::prompt::Mode,
     max_steps: usize,
 ) -> ! {
     let cfg = config::load();
     let base = load_llm_or_exit(&cfg);
-    let model_cfg = prompt::with_model(&base, model);
-    match prompt::fulfill(
+    let model_cfg = agent::prompt::with_model(&base, model);
+    match agent::prompt::fulfill(
         task,
         &model_cfg,
         role_header,
@@ -482,19 +475,26 @@ fn fulfill(
 
 /// Category / JSON prompts run through the same agentic decide-run-or-answer loop as roles — each
 /// pair's category becomes the persona header, on the configured model. No special chat-only path.
-fn run_prompt(pairs: Vec<(String, String)>, mode: prompt::Mode) -> ! {
+fn run_prompt(pairs: Vec<(String, String)>, mode: agent::prompt::Mode) -> ! {
     let cfg = config::load();
     let base = load_llm_or_exit(&cfg);
     let opts = exec_opts(&cfg);
     for (cat, text) in &pairs {
-        let header = match prompt::category_header(cat) {
+        let header = match agent::prompt::category_header(cat) {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("tokex: {e}");
                 exit(2);
             }
         };
-        if let Err(e) = prompt::fulfill(text, &base, Some(header), mode, &opts, prompt::MAX_STEPS) {
+        if let Err(e) = agent::prompt::fulfill(
+            text,
+            &base,
+            Some(header),
+            mode,
+            &opts,
+            agent::prompt::MAX_STEPS,
+        ) {
             eprintln!("tokex: {e}");
             exit(1);
         }
