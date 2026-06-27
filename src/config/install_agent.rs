@@ -328,7 +328,7 @@ pub fn install_agent(agent: &str) -> Result<(), String> {
         })?;
 
     let project_dir = current_project_dir()
-        .ok_or("not in a project directory (no Cargo.toml, package.json, etc.)")?;
+        .unwrap_or_else(|| std::env::current_dir().expect("could not get current directory"));
 
     let project_name = project_dir
         .file_name()
