@@ -109,22 +109,8 @@ pub fn dispatch_cmd(cmd: Cmd) -> Option<Intent> {
                 eprintln!("cotrex: setup failed: {e}");
                 exit(1);
             }
-            if config::load().graph_auto {
-                match graphify::setup_steps() {
-                    Ok(steps) => {
-                        for (label, step) in steps {
-                            let spinner = agent::prompt::Spinner::start(label);
-                            if let Err(e) = step() {
-                                spinner.complete();
-                                eprintln!("cotrex: {e}");
-                            } else {
-                                spinner.complete();
-                            }
-                        }
-                    }
-                    Err(e) => eprintln!("cotrex: {e}"),
-                }
-            }
+            // Graphify setup is skipped here — it runs only when `cotrex install agent`
+            // is executed inside a project directory, not during initial setup.
             exit(0);
         }
         Cmd::Mcp => llm::mcp::serve(),
