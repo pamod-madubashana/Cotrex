@@ -65,8 +65,8 @@ const tui: TuiPlugin = async (api) => {
         return (
           <box flexDirection="column">
             <text>Cotrex</text>
-            <text dim>{formatNum(usage.total_runs)} runs</text>
-            <text dim>{formatNum(usage.total_tokens_out)} tokens saved</text>
+            <text color="gray">{formatNum(usage.total_runs)} runs</text>
+            <text color="gray">{formatNum(usage.total_tokens_out)} tokens saved</text>
           </box>
         )
       },
