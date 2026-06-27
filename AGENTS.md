@@ -5,7 +5,7 @@ Guidance for agentic coding agents working in this repository.
 ## Agent Rules (MUST follow)
 
 - **Always use `tokex` to run commands.** Never run `cargo`, `git`, `npm`, etc. directly.
-  Use `tokex <command>` (e.g. `tokex cargo build`, `tokex git status`).
+  Use `tokex -m <command>` (e.g. `tokex -m cargo build`, `tokex -m git status`).
 - **If `tokex` is not on PATH or fails to spawn**, fall back to running `rtk <command>`
   directly (rtk is bundled next to tokex). Only use raw shell commands as a last resort.
 - **Never bypass the pipeline.** Tokex normalizes output for agents — raw commands lose that.
@@ -19,16 +19,16 @@ no separate install needed.
 ## Build & Test Commands
 
 ```bash
-tokex cargo build                       # build (must be warning-clean before committing)
-tokex cargo test                        # all tests
-tokex cargo test native_command_maps    # run a single test by name (substring match)
-tokex cargo test -p tokex               # CI-style: test only our crate, not vendored rtk
-tokex cargo run -- run "git status"     # CLI: forward a command through rtk
-tokex cargo run -- git status           # same — run subcommand optional (several args = command)
+tokex -m cargo build                       # build (must be warning-clean before committing)
+tokex -m cargo test                        # all tests
+tokex -m cargo test native_command_maps    # run a single test by name (substring match)
+tokex -m cargo test -p tokex               # CI-style: test only our crate, not vendored rtk
+tokex -m cargo run -- run "git status"     # CLI: forward a command through rtk
+tokex -m cargo run -- git status           # same — run subcommand optional (several args = command)
 tokex echo '{"tool":"rtk","cmd":"cargo --version"}' | cargo run --   # stdin-JSON mode
-tokex cargo run -- "plan-stack: music player app"                    # category prompt
-tokex cargo run -- script Scripts/rename.sh                          # run a script via rtk
-tokex update                            # check for newer release and install if available
+tokex -m cargo run -- "plan-stack: music player app"                    # category prompt
+tokex -m cargo run -- script Scripts/rename.sh                          # run a script via rtk
+tokex -m update                            # check for newer release and install if available
 ```
 
 **CI** (`.github/workflows/ci.yml`): runs `cargo test -p tokex` on ubuntu-latest with
@@ -122,10 +122,10 @@ human reads goes to stderr. Never mix human text into stdout.
 - **Never push to `main`.** Every change ships through a PR:
   1. Branch off `main` with a descriptive name.
   2. Commit each logical change immediately.
-  3. `tokex gh pr create` to open a PR.
+  3. `tokex -m gh pr create` to open a PR.
   4. Wait for CI to pass before merging.
-  5. `tokex gh pr merge --squash --delete-branch`.
-  6. `tokex git checkout main && git pull`, delete the local branch.
+  5. `tokex -m gh pr merge --squash --delete-branch`.
+  6. `tokex -m git checkout main && git pull`, delete the local branch.
 
 ## Module Map
 
@@ -135,11 +135,11 @@ human reads goes to stderr. Never mix human text into stdout.
 | `intent.rs` | Normalize CLI/JSON to `Intent`; map to rtk args via `RTK_NATIVE` |
 | `orchestrate.rs` | Spawn rtk, read pipes on 2 threads, write normalized events |
 | `normalize.rs` | Classify output lines by severity (error/warning/info) |
-| `config.rs` | Persistent config in OS config dir; `tokex setup` flow |
+| `config.rs` | Persistent config in OS config dir; `tokex -m setup` flow |
 | `llm.rs` | Optional LLM compression — POST output, get structured insight |
 | `mcp.rs` | Hand-rolled JSON-RPC 2.0 stdio server (sync, no tokio) |
 | `prompt.rs` | Agentic task loop — model decides run-vs-answer, step loop |
-| `script.rs` | `tokex script` — run agent scripts through rtk, verify via git diff |
+| `script.rs` | `tokex -m script` — run agent scripts through rtk, verify via git diff |
 | `tool.rs` | Minimal tool registry (read/write/edit/glob/grep) for agentic loop |
 | `permission.rs` | Pattern-based permission rules for risky command gating |
 | `graphify.rs` | Auto-refresh code map after code-changing runs |
