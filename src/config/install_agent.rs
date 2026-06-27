@@ -434,7 +434,45 @@ pub fn install_agent(agent: &str) -> Result<(), String> {
             global_plugins_dir.display()
         );
 
-        // 4. Add MCP server config to project opencode.json.
+        // 4. Add MCP server config to GLOBAL opencode config.
+        let global_config = global_opencode.join("opencode.json");
+        let mut global_cfg: serde_json::Value = if global_config.exists() {
+            fs::read_to_string(&global_config)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+
+        let global_mcp = global_cfg
+            .as_object_mut()
+            .unwrap()
+            .entry("mcp")
+            .or_insert_with(|| serde_json::json!({}));
+
+        if global_mcp.get("cotrex").is_none() {
+            global_mcp.as_object_mut().unwrap().insert(
+                "cotrex".to_string(),
+                serde_json::json!({
+                    "type": "local",
+                    "command": ["cotrex", "mcp"]
+                }),
+            );
+
+            let pretty = serde_json::to_string_pretty(&global_cfg).unwrap_or_default();
+            fs::write(&global_config, format!("{}\n", pretty))
+                .map_err(|e| format!("failed to write {}: {e}", global_config.display()))?;
+
+            eprintln!(
+                "cotrex: MCP server added to {}",
+                global_config.display()
+            );
+        } else {
+            eprintln!("cotrex: MCP server already configured globally");
+        }
+
+        // 5. Add MCP server config to PROJECT opencode.json.
         let project_config = project_dir.join("opencode.json");
         let mut config: serde_json::Value = if project_config.exists() {
             fs::read_to_string(&project_config)
