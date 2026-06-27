@@ -63,12 +63,10 @@ const tui: TuiPlugin = async (api) => {
         const saved = usage.total_tokens_out * PAID_MODEL_COST_PER_TOKEN
 
         return (
-          <box flexDirection="column" gap={1}>
-            <text>
-              <b>Cotrex</b>
-            </text>
-            <text> {formatNum(usage.total_runs)} runs</text>
-            <text color="green"> {formatNum(usage.total_tokens_out)} tokens saved</text>
+          <box flexDirection="column">
+            <text>Cotrex</text>
+            <text>{formatNum(usage.total_runs)} runs</text>
+            <text>{formatNum(usage.total_tokens_out)} tokens saved</text>
           </box>
         )
       },

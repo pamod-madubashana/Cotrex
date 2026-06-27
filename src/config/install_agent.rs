@@ -130,21 +130,16 @@ var tui = async (api) => {
           return null;
         const saved = usage.total_tokens_out * PAID_MODEL_COST_PER_TOKEN;
         return (() => {
-          var _el$ = _$createElement("box"), _el$2 = _$createElement("text"), _el$3 = _$createElement("b"), _el$5 = _$createElement("text"), _el$6 = _$createTextNode(` `), _el$7 = _$createTextNode(` runs`), _el$8 = _$createElement("text"), _el$9 = _$createTextNode(` `), _el$0 = _$createTextNode(` tokens saved`);
+          var _el$ = _$createElement("box"), _el$2 = _$createElement("text"), _el$4 = _$createElement("text"), _el$5 = _$createTextNode(` runs`), _el$6 = _$createElement("text"), _el$7 = _$createTextNode(` tokens saved`);
           _$insertNode(_el$, _el$2);
-          _$insertNode(_el$, _el$5);
-          _$insertNode(_el$, _el$8);
+          _$insertNode(_el$, _el$4);
+          _$insertNode(_el$, _el$6);
           _$setProp(_el$, "flexDirection", "column");
-          _$setProp(_el$, "gap", 1);
-          _$insertNode(_el$2, _el$3);
-          _$insertNode(_el$3, _$createTextNode(`Cotrex`));
-          _$insertNode(_el$5, _el$6);
-          _$insertNode(_el$5, _el$7);
-          _$insert(_el$5, () => formatNum(usage.total_runs), _el$7);
-          _$insertNode(_el$8, _el$9);
-          _$insertNode(_el$8, _el$0);
-          _$setProp(_el$8, "color", "green");
-          _$insert(_el$8, () => formatNum(usage.total_tokens_out), _el$0);
+          _$insertNode(_el$2, _$createTextNode(`Cotrex`));
+          _$insertNode(_el$4, _el$5);
+          _$insert(_el$4, () => formatNum(usage.total_runs), _el$5);
+          _$insertNode(_el$6, _el$7);
+          _$insert(_el$6, () => formatNum(usage.total_tokens_out), _el$7);
           return _el$;
         })();
       }
