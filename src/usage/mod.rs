@@ -11,6 +11,10 @@ use std::sync::Mutex;
 
 const CHARS_PER_TOKEN: usize = 4;
 
+/// Estimated cost per token for a paid model (Claude Sonnet ~$3/1M input tokens).
+/// Used to show users how much they save by running through cotrex with a free model.
+const PAID_MODEL_COST_PER_TOKEN: f64 = 3.0 / 1_000_000.0;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageEntry {
     pub timestamp: String,
@@ -49,6 +53,22 @@ impl Default for UsageStats {
 
 fn bytes_to_tokens(bytes: usize) -> usize {
     bytes / CHARS_PER_TOKEN
+}
+
+/// Calculate cost in dollars for a given token count at the paid model rate.
+fn token_cost(tokens: usize) -> f64 {
+    tokens as f64 * PAID_MODEL_COST_PER_TOKEN
+}
+
+/// Format a dollar amount for display.
+fn format_cost(cost: f64) -> String {
+    if cost < 0.01 {
+        format!("${:.4}", cost)
+    } else if cost < 1.0 {
+        format!("${:.3}", cost)
+    } else {
+        format!("${:.2}", cost)
+    }
 }
 
 fn global_usage_path() -> Option<PathBuf> {
@@ -153,7 +173,7 @@ pub fn summary() -> String {
         return "No usage recorded yet.".to_string();
     }
 
-    let raw_output_estimate = stats.total_output_bytes;
+    let cost = token_cost(stats.total_tokens_out as usize);
 
     format!(
         "Cotrex Usage\n\
@@ -161,19 +181,19 @@ pub fn summary() -> String {
          Total runs:        {}\n\
          Tokens in:         {} (~{} chars)\n\
          Tokens out:        {} (~{} chars)\n\
-         Raw output saved:  ~{} chars normalized\n\
          Total I/O:         {} in / {} out\n\
          ─────────────────────────────\n\
-         Tokens are free — cotrex normalizes output\n\
-         so your agent processes less, not more.",
+         Paid model cost:   {} (est. @ $3/1M tokens)\n\
+         You saved:         {} — running free",
         stats.total_runs,
         stats.total_tokens_in,
         stats.total_input_bytes,
         stats.total_tokens_out,
         stats.total_output_bytes,
-        raw_output_estimate,
         stats.total_input_bytes,
         stats.total_output_bytes,
+        format_cost(cost),
+        format_cost(cost),
     )
 }
 
@@ -185,12 +205,15 @@ pub fn summary_json() -> serde_json::Value {
             .map(|p| load_from(&p))
             .unwrap_or_default(),
     };
+    let cost = token_cost(stats.total_tokens_out as usize);
     serde_json::json!({
         "total_runs": stats.total_runs,
         "total_tokens_in": stats.total_tokens_in,
         "total_tokens_out": stats.total_tokens_out,
         "total_input_bytes": stats.total_input_bytes,
         "total_output_bytes": stats.total_output_bytes,
+        "paid_model_cost": format_cost(cost),
+        "paid_model_cost_raw": cost,
         "recent_commands": stats.entries.iter().rev().take(10).map(|e| {
             serde_json::json!({
                 "command": e.command,
