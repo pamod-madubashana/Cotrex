@@ -88,7 +88,7 @@ impl Intent {
                     format!("powershell -NoProfile -Command {cmd}"),
                 ];
             }
-            return vec!["run".into(), "-c".into(), cmd.into()];
+            return vec!["run".into(), "-c".into(), format!("sh -c '{cmd}'")];
         }
 
         let first = shell_split(cmd).next().unwrap_or_default();
@@ -288,9 +288,19 @@ mod tests {
     fn shell_operators_route_to_sh() {
         let args = Intent::from_command("git add foo && git commit -m msg").to_rtk_args();
         if cfg!(windows) {
-            assert_eq!(args, vec!["run", "-c", "cmd /c git add foo && git commit -m msg"]);
+            assert_eq!(
+                args,
+                vec![
+                    "run",
+                    "-c",
+                    "powershell -NoProfile -Command git add foo && git commit -m msg"
+                ]
+            );
         } else {
-            assert_eq!(args, vec!["run", "-c", "sh -c 'git add foo && git commit -m msg'"]);
+            assert_eq!(
+                args,
+                vec!["run", "-c", "sh -c 'git add foo && git commit -m msg'"]
+            );
         }
     }
 }

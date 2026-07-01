@@ -41,6 +41,7 @@ jobs:
       - name: Copy graphify to target/release
         shell: bash
         run: |
+          mkdir -p target/release
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp dist/graphify.exe target/release/graphify.exe
           else
