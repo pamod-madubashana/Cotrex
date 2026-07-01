@@ -1,6 +1,38 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Rules injected into every SKILL.md and AGENTS.md to enforce cotrex usage.
+const ENFORCEMENT_RULES: &str = r#"## CRITICAL: Tool Enforcement
+
+**Before executing ANY shell command**, check if a cotrex MCP tool can do it.
+
+| Instead of this | Use this |
+|---|---|
+| `cargo build` | `cotrex_run` with `command: "cargo build"` |
+| `cargo test` | `cotrex_run` with `command: "cargo test"` |
+| `cargo test -p cotrex` | `cotrex_run` with `command: "cargo test -p cotrex"` |
+| `git status` | `cotrex_run` with `command: "git status"` |
+| `git diff` | `cotrex_run` with `command: "git diff"` |
+| `gh pr create` | `cotrex_run` with `command: "gh pr create"` |
+| multi-step build+test | `cotrex_delegate` or `cotrex_plan` |
+
+**Fallback chain** (only when MCP tools are unavailable):
+1. `cotrex -m <command>` (CLI)
+2. `rtk <command>` (direct)
+3. Raw shell (last resort — loses normalization)
+
+**NEVER** use raw shell when cotrex MCP tools are available. This is not optional.
+
+## CRITICAL: Graphify First
+
+**Before reading files or exploring the codebase**, query the knowledge graph first:
+- `cotrex_graphify_query` — search for concepts, relationships, architecture
+- `cotrex_graphify_explain` — get details on a specific node
+- `cotrex_graphify_path` — find connections between concepts
+
+Only read specific files if graphify doesn't have the answer. Reading >3 files manually without trying graphify first wastes tokens.
+"#;
+
 const SUPPORTED_AGENTS: &[(&str, &str)] = &[
     ("opencode", "opencode"),
     ("claude", "claude"),
@@ -235,6 +267,8 @@ description: "Cotrex RTK orchestration skills for {project_name}. Run commands, 
 
 # Cotrex Skills
 
+{ENFORCEMENT_RULES}
+
 **IMPORTANT:** You are an AI agent. Always use cotrex via MCP (preferred) or CLI fallback.
 
 ## 1. MCP (preferred)
@@ -305,6 +339,46 @@ cotrex -m "explain the architecture"
         project_name = project_name,
         mcp_config = mcp_config,
     )
+}
+
+/// Marker to detect if enforcement rules are already present in AGENTS.md.
+const ENFORCEMENT_MARKER: &str = "## CRITICAL: Tool Enforcement";
+
+/// Inject enforcement rules into AGENTS.md if it exists and doesn't already have them.
+fn inject_agents_md_rules(project_dir: &Path) -> Result<(), String> {
+    let agents_md = project_dir.join("AGENTS.md");
+    if !agents_md.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&agents_md)
+        .map_err(|e| format!("failed to read {}: {e}", agents_md.display()))?;
+
+    if content.contains(ENFORCEMENT_MARKER) {
+        eprintln!("cotrex: AGENTS.md already has enforcement rules");
+        return Ok(());
+    }
+
+    // Insert enforcement rules right after the first heading line.
+    let mut lines: Vec<&str> = content.lines().collect();
+    let insert_pos = lines
+        .iter()
+        .position(|l| l.starts_with("# "))
+        .map(|p| p + 1)
+        .unwrap_or(0);
+
+    let rules_block = format!("\n{ENFORCEMENT_RULES}\n");
+    lines.insert(insert_pos, &rules_block);
+
+    let new_content = lines.join("\n");
+    fs::write(&agents_md, new_content)
+        .map_err(|e| format!("failed to write {}: {e}", agents_md.display()))?;
+
+    eprintln!(
+        "cotrex: enforcement rules injected into {}",
+        agents_md.display()
+    );
+    Ok(())
 }
 
 /// Project-local skills go in `.agents/skills/cotrex/` — the standard path OpenCode, Amp,
@@ -511,7 +585,12 @@ pub fn install_agent(agent: &str) -> Result<(), String> {
         }
     }
 
-    // 5. Set up graphify: install package, register skill, build code map.
+    // 5. Inject enforcement rules into AGENTS.md if it exists.
+    if let Err(e) = inject_agents_md_rules(&project_dir) {
+        eprintln!("cotrex: {e}");
+    }
+
+    // 6. Set up graphify: install package, register skill, build code map.
     // This only runs when `cotrex install agent` is executed inside a project directory.
     match crate::graphify::setup_steps() {
         Ok(steps) => {

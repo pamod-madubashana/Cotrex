@@ -2,13 +2,41 @@
 
 Guidance for agentic coding agents working in this repository.
 
-## Agent Rules (MUST follow)
+## CRITICAL: Tool Enforcement
 
-- **Connect to cotrex via MCP.** Cotrex exposes a JSON-RPC 2.0 stdio MCP server with tools
-  (`run`, `delegate`, `plan`, `list_roles`, `set_agent`). Use the `run` tool to execute commands.
+**Before executing ANY shell command**, check if a cotrex MCP tool can do it.
+
+| Instead of this | Use this |
+|---|---|
+| `cargo build` | `cotrex_run` with `command: "cargo build"` |
+| `cargo test` | `cotrex_run` with `command: "cargo test"` |
+| `cargo test -p cotrex` | `cotrex_run` with `command: "cargo test -p cotrex"` |
+| `git status` | `cotrex_run` with `command: "git status"` |
+| `git diff` | `cotrex_run` with `command: "git diff"` |
+| `gh pr create` | `cotrex_run` with `command: "gh pr create"` |
+| multi-step build+test | `cotrex_delegate` or `cotrex_plan` |
+
+**Fallback chain** (only when MCP tools are unavailable):
+1. `cotrex -m <command>` (CLI)
+2. `rtk <command>` (direct)
+3. Raw shell (last resort — loses normalization)
+
+**NEVER** use raw shell when cotrex MCP tools are available. This is not optional.
+
+## CRITICAL: Graphify First
+
+**Before reading files or exploring the codebase**, query the knowledge graph first:
+- `cotrex_graphify_query` — search for concepts, relationships, architecture
+- `cotrex_graphify_explain` — get details on a specific node
+- `cotrex_graphify_path` — find connections between concepts
+
+Only read specific files if graphify doesn't have the answer. Reading >3 files manually without trying graphify first wastes tokens.
+
+## Agent Rules
+
+- **Connect to cotrex via MCP.** Cotrex exposes tools (`run`, `delegate`, `plan`, `list_roles`, `set_agent`). Use them.
 - **If MCP is not available**, fall back to CLI: `cotrex -m <command>` (e.g. `cotrex -m cargo build`).
-- **If cotrex is not on PATH**, fall back to `rtk <command>` directly. Raw shell commands are
-  a last resort — they lose the normalization pipeline.
+- **If cotrex is not on PATH**, fall back to `rtk <command>` directly. Raw shell commands are a last resort.
 - **Never bypass the pipeline.** Cotrex normalizes output for agents — raw commands lose that.
 
 ## MCP Server
