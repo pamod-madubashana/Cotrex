@@ -143,7 +143,7 @@ fn tools_list() -> Value {
             "properties": {},
         },
     }, {
-        "name": "graphify_query",
+        "name": "graphify",
         "description": "Query the graphify knowledge graph using BFS or DFS traversal. Returns nodes and edges relevant to the question.",
         "inputSchema": {
             "type": "object",
@@ -222,7 +222,7 @@ fn tools_call(params: &Value, cfg: &Config) -> Value {
         "delegate" => tool_delegate(params, cfg),
         "plan" => tool_plan(params, cfg),
         "usage" => tool_usage(),
-        "graphify_query" => tool_graphify_query(params),
+        "graphify" => tool_graphify_query(params),
         "graphify_path" => tool_graphify_path(params),
         "graphify_explain" => tool_graphify_explain(params),
         "graphify_add" => tool_graphify_add(params),

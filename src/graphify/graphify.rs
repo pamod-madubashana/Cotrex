@@ -315,6 +315,33 @@ fn register_skill(_py: &str, verbose: bool, prompt_when_unknown: bool) {
     }
 }
 
+/// Create a default `.graphifyignore` if one doesn't exist.
+/// Prevents graphify from indexing build artifacts, vendor dirs, and config folders.
+fn ensure_graphifyignore(dir: &Path) {
+    let ignore_path = dir.join(".graphifyignore");
+    if ignore_path.exists() {
+        return;
+    }
+    let defaults = "\
+graphify-out/
+target/
+dist/
+build/
+vendor/
+.git/
+.github/
+.agents/
+.claude/
+.cotrex/
+.opencode/
+plugins/
+assets/
+Scripts/
+docs/
+";
+    let _ = std::fs::write(&ignore_path, defaults);
+}
+
 /// Best-effort refresh after a code-changing run — never blocks the run. If set up, fire a cheap
 /// incremental update in the background; if not, run the one-time bootstrap detached (via
 /// `cotrex graph`) so install + skill-register + first build never stall the command.
@@ -323,10 +350,12 @@ pub fn auto_update(command: &str) {
     if !touches_code(command) {
         return;
     }
-    if current_project_dir().is_none() {
-        return;
-    }
+    let cwd = match current_project_dir() {
+        Some(d) => d,
+        None => return,
+    };
     if ensure_package(py(), false) {
+        ensure_graphifyignore(&cwd);
         // Run graphify update in background (fire-and-forget)
         let _ = run_graphify(&["update", "."], false);
     } else {
@@ -392,6 +421,7 @@ pub fn setup_steps() -> Result<Vec<(&'static str, Box<dyn FnOnce() -> Result<(),
         (
             "building code map",
             Box::new(move || {
+                ensure_graphifyignore(&_cwd);
                 if run_graphify(&["update", "."], true) {
                     Ok(())
                 } else {
@@ -414,6 +444,7 @@ fn update_blocking_with_prompt(prompt_when_unknown: bool, verbose: bool) -> Resu
     if verbose {
         eprintln!("cotrex: refreshing graphify code map in {}", cwd.display());
     }
+    ensure_graphifyignore(&cwd);
     if run_graphify(&["update", "."], true) {
         Ok(())
     } else {

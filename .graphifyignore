@@ -1,1 +1,15 @@
 graphify-out/
+target/
+dist/
+build/
+vendor/
+.git/
+.github/
+.agents/
+.claude/
+.cotrex/
+.opencode/
+plugins/
+assets/
+Scripts/
+docs/
