@@ -33,7 +33,7 @@ Raw shell loses normalization. Only use it when cotrex is completely unavailable
 ## RULE 1: GRAPHIFY FIRST
 
 Before reading files or exploring the codebase, query the knowledge graph:
-- `cotrex_graphify_query` — search for concepts, relationships, architecture
+- `cotrex_graphify` — search for concepts, relationships, architecture
 - `cotrex_graphify_explain` — get details on a specific node
 - `cotrex_graphify_path` — find connections between concepts
 
