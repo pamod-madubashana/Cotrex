@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "src/graphify/graphify.rs": {
-    "mtime": 1782976425.038813,
-    "ast_hash": "4f59d17bde822dbc1806533aa7eabe81",
+    "mtime": 1783163299.7949214,
+    "ast_hash": "3577464b53f799dfb0b0a9dc5dee697c",
     "semantic_hash": ""
   },
   "src/graphify/mod.rs": {
@@ -185,8 +185,8 @@
     "semantic_hash": ""
   },
   "src/llm/mcp.rs": {
-    "mtime": 1782973200.5920327,
-    "ast_hash": "2d3546e7ad3d7a73724d1e15cb5e1deb",
+    "mtime": 1783163281.867129,
+    "ast_hash": "6cc5b1b9c12eaabee05b658f3f79f567",
     "semantic_hash": ""
   },
   "src/llm/mod.rs": {
@@ -5087,6 +5087,11 @@
   "src/config/download.rs": {
     "mtime": 1782920931.8944068,
     "ast_hash": "95e68e0b51beedec598679a2917fed31",
+    "semantic_hash": ""
+  },
+  "graphify-out/memory/query_20260704_110636_how_to_fix_graphify_on_windows.md": {
+    "mtime": 1783163196.4391375,
+    "ast_hash": "e4fc3a461f09b43614c391047950403e",
     "semantic_hash": ""
   }
 }

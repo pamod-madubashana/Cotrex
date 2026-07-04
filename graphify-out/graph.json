@@ -1050,7 +1050,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_config_download",
-      "community": 6,
+      "community": 10,
       "norm_label": "download.rs"
     },
     {
@@ -1060,7 +1060,7 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "src_config_download_format_bytes",
-      "community": 6,
+      "community": 10,
       "norm_label": "format_bytes()"
     },
     {
@@ -1070,7 +1070,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "src_config_download_rs_string",
-      "community": 6,
+      "community": 10,
       "norm_label": "string"
     },
     {
@@ -1080,7 +1080,7 @@
       "source_location": "L33",
       "_origin": "ast",
       "id": "src_config_download_download_with_progress",
-      "community": 6,
+      "community": 10,
       "norm_label": "download_with_progress()"
     },
     {
@@ -1090,7 +1090,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "src_config_download_rs_path",
-      "community": 6,
+      "community": 10,
       "norm_label": "path"
     },
     {
@@ -1100,7 +1100,7 @@
       "source_location": "L88",
       "_origin": "ast",
       "id": "src_config_download_spinner",
-      "community": 6,
+      "community": 10,
       "norm_label": "spinner()"
     },
     {
@@ -1110,7 +1110,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "progressbar",
-      "community": 6,
+      "community": 10,
       "norm_label": "progressbar"
     },
     {
@@ -3077,7 +3077,7 @@
       "label": "save_result()",
       "file_type": "code",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L631",
+      "source_location": "L632",
       "_origin": "ast",
       "id": "src_graphify_graphify_save_result",
       "community": 1,
@@ -3087,7 +3087,7 @@
       "label": "watch()",
       "file_type": "code",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L661",
+      "source_location": "L662",
       "_origin": "ast",
       "id": "src_graphify_graphify_watch",
       "community": 1,
@@ -3097,7 +3097,7 @@
       "label": "read_only_commands_skip_update()",
       "file_type": "code",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L677",
+      "source_location": "L678",
       "_origin": "ast",
       "id": "src_graphify_graphify_read_only_commands_skip_update",
       "community": 1,
@@ -3107,7 +3107,7 @@
       "label": "building_or_vcs_writes_trigger_update()",
       "file_type": "code",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L684",
+      "source_location": "L685",
       "_origin": "ast",
       "id": "src_graphify_graphify_building_or_vcs_writes_trigger_update",
       "community": 1,
@@ -3117,7 +3117,7 @@
       "label": "project_markers_gate_graphify_updates()",
       "file_type": "code",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L691",
+      "source_location": "L692",
       "_origin": "ast",
       "id": "src_graphify_graphify_project_markers_gate_graphify_updates",
       "community": 1,
@@ -4262,6 +4262,46 @@
       "id": "readme_license",
       "community": 15,
       "norm_label": "license"
+    },
+    {
+      "label": "query_20260704_110636_how_to_fix_graphify_on_windows.md",
+      "file_type": "document",
+      "source_file": "graphify-out/memory/query_20260704_110636_how_to_fix_graphify_on_windows.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "graphify_out_memory_query_20260704_110636_how_to_fix_graphify_on_windows",
+      "community": 25,
+      "norm_label": "query_20260704_110636_how_to_fix_graphify_on_windows.md"
+    },
+    {
+      "label": "Q: how to fix graphify on Windows",
+      "file_type": "document",
+      "source_file": "graphify-out/memory/query_20260704_110636_how_to_fix_graphify_on_windows.md",
+      "source_location": "L9",
+      "_origin": "ast",
+      "id": "graphify_out_memory_query_20260704_110636_how_to_fix_graphify_on_windows_q_how_to_fix_graphify_on_windows",
+      "community": 25,
+      "norm_label": "q: how to fix graphify on windows"
+    },
+    {
+      "label": "Answer",
+      "file_type": "document",
+      "source_file": "graphify-out/memory/query_20260704_110636_how_to_fix_graphify_on_windows.md",
+      "source_location": "L11",
+      "_origin": "ast",
+      "id": "graphify_out_memory_query_20260704_110636_how_to_fix_graphify_on_windows_answer",
+      "community": 25,
+      "norm_label": "answer"
+    },
+    {
+      "label": "Source Nodes",
+      "file_type": "document",
+      "source_file": "graphify-out/memory/query_20260704_110636_how_to_fix_graphify_on_windows.md",
+      "source_location": "L15",
+      "_origin": "ast",
+      "id": "graphify_out_memory_query_20260704_110636_how_to_fix_graphify_on_windows_source_nodes",
+      "community": 25,
+      "norm_label": "source nodes"
     }
   ],
   "links": [
@@ -9985,7 +10025,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L631",
+      "source_location": "L632",
       "weight": 1.0,
       "context": "return_type",
       "source": "src_graphify_graphify_save_result",
@@ -10029,7 +10069,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L661",
+      "source_location": "L662",
       "weight": 1.0,
       "context": "return_type",
       "source": "src_graphify_graphify_watch",
@@ -10659,7 +10699,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L684",
+      "source_location": "L685",
       "weight": 1.0,
       "source": "src_graphify_graphify",
       "target": "src_graphify_graphify_building_or_vcs_writes_trigger_update",
@@ -10829,7 +10869,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L691",
+      "source_location": "L692",
       "weight": 1.0,
       "source": "src_graphify_graphify",
       "target": "src_graphify_graphify_project_markers_gate_graphify_updates",
@@ -10869,7 +10909,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L677",
+      "source_location": "L678",
       "weight": 1.0,
       "source": "src_graphify_graphify",
       "target": "src_graphify_graphify_read_only_commands_skip_update",
@@ -10930,7 +10970,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L631",
+      "source_location": "L632",
       "weight": 1.0,
       "source": "src_graphify_graphify",
       "target": "src_graphify_graphify_save_result",
@@ -10990,7 +11030,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L661",
+      "source_location": "L662",
       "weight": 1.0,
       "source": "src_graphify_graphify",
       "target": "src_graphify_graphify_watch",
@@ -11210,7 +11250,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L665",
+      "source_location": "L666",
       "weight": 1.0,
       "source": "src_graphify_graphify_watch",
       "target": "src_graphify_graphify_run_graphify",
@@ -11331,7 +11371,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L650",
+      "source_location": "L651",
       "weight": 1.0,
       "source": "src_graphify_graphify_save_result",
       "target": "src_graphify_graphify_run_graphify_capture",
@@ -11451,7 +11491,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L631",
+      "source_location": "L632",
       "weight": 1.0,
       "context": "generic_arg",
       "source": "src_graphify_graphify_save_result",
@@ -11495,7 +11535,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/graphify/graphify.rs",
-      "source_location": "L661",
+      "source_location": "L662",
       "weight": 1.0,
       "context": "generic_arg",
       "source": "src_graphify_graphify_watch",
@@ -14088,8 +14128,38 @@
       "source": "readme_usage",
       "target": "readme_setup",
       "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "graphify-out/memory/query_20260704_110636_how_to_fix_graphify_on_windows.md",
+      "source_location": "L9",
+      "weight": 1.0,
+      "source": "graphify_out_memory_query_20260704_110636_how_to_fix_graphify_on_windows",
+      "target": "graphify_out_memory_query_20260704_110636_how_to_fix_graphify_on_windows_q_how_to_fix_graphify_on_windows",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "graphify-out/memory/query_20260704_110636_how_to_fix_graphify_on_windows.md",
+      "source_location": "L11",
+      "weight": 1.0,
+      "source": "graphify_out_memory_query_20260704_110636_how_to_fix_graphify_on_windows_q_how_to_fix_graphify_on_windows",
+      "target": "graphify_out_memory_query_20260704_110636_how_to_fix_graphify_on_windows_answer",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "graphify-out/memory/query_20260704_110636_how_to_fix_graphify_on_windows.md",
+      "source_location": "L15",
+      "weight": 1.0,
+      "source": "graphify_out_memory_query_20260704_110636_how_to_fix_graphify_on_windows_q_how_to_fix_graphify_on_windows",
+      "target": "graphify_out_memory_query_20260704_110636_how_to_fix_graphify_on_windows_source_nodes",
+      "confidence_score": 1.0
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "ce6012a07afb91ddfa14107586284b7b6a2a9dcf"
+  "built_at_commit": "439b7fe9f8858c9f37b4c1ee003179f09c0bc544"
 }

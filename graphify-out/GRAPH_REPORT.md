@@ -1,16 +1,16 @@
 # Graph Report - MVP  (2026-07-04)
 
 ## Corpus Check
-- 33 files · ~26,106 words
+- 34 files · ~26,210 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 426 nodes · 921 edges · 25 communities
+- 430 nodes · 924 edges · 26 communities
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 1 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `ce6012a0`
+- Built from commit: `439b7fe9`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -35,6 +35,7 @@
 - [[_COMMUNITY_AGENTS|AGENTS.md]]
 - [[_COMMUNITY_normalize.rs|normalize.rs]]
 - [[_COMMUNITY_Cli|Cli]]
+- [[_COMMUNITY_Q how to fix graphify on Windows|Q: how to fix graphify on Windows]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `Result_` - 48 edges
@@ -63,7 +64,7 @@
 ## Import Cycles
 - None detected.
 
-## Communities (25 total, 0 thin omitted)
+## Communities (26 total, 0 thin omitted)
 
 ### Community 0 - "prompt.rs"
 Cohesion: 0.08
@@ -90,8 +91,8 @@ Cohesion: 0.19
 Nodes (23): MutexGuard, bytes_to_tokens(), chrono_now(), footer(), footer_contains_token_counts(), footer_shows_failed_status(), format_cost(), get_global() (+15 more)
 
 ### Community 6 - "install.rs"
-Cohesion: 0.16
-Nodes (20): ProgressBar, download_with_progress(), format_bytes(), Path, String, spinner(), asset_for(), asset_name() (+12 more)
+Cohesion: 0.25
+Nodes (14): asset_for(), asset_name(), download_url(), ensure_rtk(), find_bin(), install(), on_path(), Option (+6 more)
 
 ### Community 7 - "permission.rs"
 Cohesion: 0.20
@@ -106,8 +107,8 @@ Cohesion: 0.26
 Nodes (14): agent_skills_dir(), cotrex_skill(), current_project_dir(), graphify_skill(), inject_agents_md_rules(), install_agent(), is_project_dir(), list_installed() (+6 more)
 
 ### Community 10 - "update.rs"
-Cohesion: 0.26
-Nodes (14): asset_for(), cleanup_old_backups(), current_exe_path(), current_version(), download_release(), fetch_latest_tag(), find_bin(), is_newer() (+6 more)
+Cohesion: 0.16
+Nodes (20): ProgressBar, download_with_progress(), format_bytes(), Path, String, spinner(), asset_for(), cleanup_old_backups() (+12 more)
 
 ### Community 11 - "CLAUDE.md"
 Cohesion: 0.14
@@ -145,21 +146,25 @@ Nodes (6): classify(), LineEvent, normalize(), normalize_keeps_line_verbatim(), 
 Cohesion: 0.40
 Nodes (4): Cli, Cmd, Cmd, Option
 
+### Community 25 - "Q: how to fix graphify on Windows"
+Cohesion: 0.50
+Nodes (3): Answer, Q: how to fix graphify on Windows, Source Nodes
+
 ## Knowledge Gaps
-- **29 isolated node(s):** `Cmd`, `Msg`, `Cmd`, `RULE 0: USE COTREX — NO EXCEPTIONS`, `RULE 1: GRAPHIFY FIRST` (+24 more)
+- **31 isolated node(s):** `Cmd`, `Msg`, `Cmd`, `RULE 0: USE COTREX — NO EXCEPTIONS`, `RULE 1: GRAPHIFY FIRST` (+26 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Result_` connect `Result_` to `prompt.rs`, `mcp.rs`, `dispatch.rs`, `intent.rs`, `install.rs`, `tool.rs`, `install_agent.rs`, `update.rs`, `LlmConfig`, `script.rs`?**
-  _High betweenness centrality (0.337) - this node is a cross-community bridge._
+  _High betweenness centrality (0.331) - this node is a cross-community bridge._
 - **Why does `Config` connect `mcp.rs` to `dispatch.rs`, `LlmConfig`?**
-  _High betweenness centrality (0.049) - this node is a cross-community bridge._
+  _High betweenness centrality (0.048) - this node is a cross-community bridge._
 - **Why does `dispatch()` connect `mcp.rs` to `Result_`?**
-  _High betweenness centrality (0.043) - this node is a cross-community bridge._
+  _High betweenness centrality (0.042) - this node is a cross-community bridge._
 - **What connects `Cmd`, `Msg`, `Cmd` to the rest of the system?**
-  _29 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _31 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `prompt.rs` be split into smaller, more focused modules?**
   _Cohesion score 0.07720782654680064 - nodes in this community are weakly interconnected._
 - **Should `Result_` be split into smaller, more focused modules?**
