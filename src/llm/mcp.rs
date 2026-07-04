@@ -189,12 +189,12 @@ fn tools_list() -> Value {
         },
     }, {
         "name": "graphify_save_result",
-        "description": "Save a Q&A result back into the knowledge graph to improve future queries.",
+        "description": "Save a Q&A result back into the knowledge graph to improve future queries. Use this AFTER answering a user question to store the Q&A pair for future retrieval. Do NOT use this to ask questions - use 'graphify' tool for querying.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "question": {"type": "string", "description": "The question that was asked"},
-                "answer": {"type": "string", "description": "The answer text"},
+                "question": {"type": "string", "description": "The question text to save (not to ask - this is for storing a completed Q&A pair)"},
+                "answer": {"type": "string", "description": "The answer text to save"},
                 "result_type": {"type": "string", "description": "Type: query, path_query, or explain"},
                 "nodes": {"type": "array", "items": {"type": "string"}, "description": "Node labels cited in the answer"},
             },

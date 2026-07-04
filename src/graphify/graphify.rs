@@ -627,7 +627,8 @@ pub fn push_neo4j(uri: &str, user: &str, password: &str) -> Result<String, Strin
     }
 }
 
-/// `graphify save-result` — save a Q&A back into the graph for future queries.
+/// `graphify save-result` — save a completed Q&A back into the graph for future queries.
+/// Use this AFTER answering a question to store the pair for later retrieval.
 pub fn save_result(
     question: &str,
     answer: &str,
