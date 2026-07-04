@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "src/graphify/graphify.rs": {
-    "mtime": 1782974908.6018455,
-    "ast_hash": "e2dbbf92557d81a7283cd80ce23269ab",
+    "mtime": 1782976425.038813,
+    "ast_hash": "4f59d17bde822dbc1806533aa7eabe81",
     "semantic_hash": ""
   },
   "src/graphify/mod.rs": {
