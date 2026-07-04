@@ -7,7 +7,15 @@ resolver = "2"
 name = "cotrex"
 version = "2.8.1"
 edition = "2021"
-description = "Agent Execution Middleware: a deterministic RTK orchestration layer that normalizes agent intent and stream output without owning execution."
+authors = ["Pamod Madubashana"]
+description = "CLI toolkit for optimizing AI agent performance and reducing token usage."
+repository = "https://github.com/pamod-madubashana/Cotrex"
+homepage = "https://github.com/pamod-madubashana/Cotrex"
+documentation = "http://pamod.is-a.dev/Cotrex/"
+readme = "README.md"
+keywords = ["ai", "cli", "token", "optimization", "agent"]
+categories = ["command-line-utilities"]
+license = "MIT"
 
 [[bin]]
 name = "cotrex"
