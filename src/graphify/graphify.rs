@@ -55,12 +55,19 @@ fn py() -> &'static str {
     }
 }
 
-/// Resolve the graphify binary. Order: PATH → Python module fallback.
-/// The embedded binary is skipped because it gets stale between cotrex releases.
+/// Resolve the graphify binary. Order: Python module → PATH → embedded.
+/// Python module is preferred because the standalone binary (PyInstaller bundle)
+/// has a multiprocessing bug on Windows that crashes all workers.
 /// Returns (binary_path, is_standalone) where is_standalone=true means it's a standalone
 /// executable (not `python -m graphify`).
 fn graphify_bin() -> (PathBuf, bool) {
-    // 1. Try graphify on PATH (usually newest version)
+    // 1. Try Python module first (avoids PyInstaller multiprocessing bug)
+    let py = py();
+    if run_quiet(&py, &["-c", "import graphify"]) {
+        return (PathBuf::from(py), false);
+    }
+
+    // 2. Try graphify on PATH
     let graphify_name = if cfg!(windows) {
         "graphify.exe"
     } else {
@@ -70,8 +77,13 @@ fn graphify_bin() -> (PathBuf, bool) {
         return (PathBuf::from(graphify_name), true);
     }
 
-    // 2. Fall back to Python module
-    let py = py();
+    // 3. Fall back to embedded (last resort — likely broken)
+    if let Some(path) = embedded_graphify::extract_graphify() {
+        if path.is_file() {
+            return (path, true);
+        }
+    }
+
     (PathBuf::from(py), false)
 }
 
@@ -439,7 +451,7 @@ pub fn setup_steps() -> Result<Vec<(&'static str, Box<dyn FnOnce() -> Result<(),
     ])
 }
 
-fn update_blocking_with_prompt(prompt_when_unknown: bool, verbose: bool) -> Result<(), String> {
+fn update_blocking_with_prompt(_prompt_when_unknown: bool, verbose: bool) -> Result<(), String> {
     let cwd = current_project_dir().ok_or_else(|| {
         "not in a project directory; skipping graphify code-map refresh".to_string()
     })?;
