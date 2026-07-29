@@ -3,6 +3,10 @@ members = [".", "vendor/rtk"]
 default-members = [".", "vendor/rtk"]
 resolver = "2"
 
+[workspace.dependencies]
+cotrex_ai_contract = { package = "contract", path = "cotrex-ai/contract" }
+cotrex_ai_runtime = { package = "runtime", path = "cotrex-ai/runtime" }
+
 [package]
 name = "cotrex"
 version = "2.8.1"
@@ -21,6 +25,10 @@ license = "MIT"
 name = "cotrex"
 path = "src/main.rs"
 
+[lib]
+name = "cotrex"
+path = "src/lib.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
@@ -33,3 +41,5 @@ markdown-to-ansi = "0.2"
 glob = "0.3"
 regex = "1"
 indicatif = "0.17"
+cotrex_ai_contract.workspace = true
+cotrex_ai_runtime.workspace = true

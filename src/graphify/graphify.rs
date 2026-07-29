@@ -63,7 +63,7 @@ fn py() -> &'static str {
 fn graphify_bin() -> (PathBuf, bool) {
     // 1. Try Python module first (avoids PyInstaller multiprocessing bug)
     let py = py();
-    if run_quiet(&py, &["-c", "import graphify"]) {
+    if run_quiet(py, &["-c", "import graphify"]) {
         return (PathBuf::from(py), false);
     }
 
@@ -111,7 +111,8 @@ fn run_graphify(args: &[&str], inherit_stdio: bool) -> bool {
     }
     if !cfg.llm_url.is_empty() {
         // graphify expects base URL without /chat/completions suffix
-        let base_url = cfg.llm_url
+        let base_url = cfg
+            .llm_url
             .trim_end_matches("/chat/completions")
             .trim_end_matches('/');
         cmd.env("OPENAI_BASE_URL", base_url);

@@ -3,6 +3,7 @@
 //! the stream. Cotrex does not own execution; RTK does.
 
 mod agent;
+mod ai_runtime;
 mod config;
 mod core;
 mod dispatch;
