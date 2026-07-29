@@ -4,3 +4,6 @@
 [submodule "vendor/graphify"]
 	path = vendor/graphify
 	url = https://github.com/safishamsi/graphify
+[submodule "cotrex-ai"]
+	path = cotrex-ai
+	url = https://github.com/pamod-madubashana/cotrex-ai.git
