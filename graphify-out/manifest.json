@@ -5093,5 +5093,250 @@
     "mtime": 1783163196.4391375,
     "ast_hash": "e4fc3a461f09b43614c391047950403e",
     "semantic_hash": ""
+  },
+  "cotrex-ai/agent/src/context.rs": {
+    "mtime": 1785348288.296868,
+    "ast_hash": "17b2d103b30fd5c231a1a805d3eaadd3",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/agent/src/controller.rs": {
+    "mtime": 1785348288.296868,
+    "ast_hash": "00d25b699035fd7d49fd491bb0aa5324",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/agent/src/decision.rs": {
+    "mtime": 1785348288.2978704,
+    "ast_hash": "247ee83e8daec9b128bce8553f71e9da",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/agent/src/lib.rs": {
+    "mtime": 1785348288.2978704,
+    "ast_hash": "599906327f6218dadc9c4175b0ab8e6a",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/agent/src/planner.rs": {
+    "mtime": 1785348288.2978704,
+    "ast_hash": "f206758cb3864cbabbec41f163177f97",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/agent/src/result.rs": {
+    "mtime": 1785348288.2988691,
+    "ast_hash": "de974244ecf82d9cdccdeb5114f26d23",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/contract/src/lib.rs": {
+    "mtime": 1785348288.2998717,
+    "ast_hash": "539d14297cff25dc2213140f52a25ce5",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/examples/src/main.rs": {
+    "mtime": 1785348288.3008685,
+    "ast_hash": "4a05b071b3d976d617a4285060a9714f",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/execution/src/engine.rs": {
+    "mtime": 1785348288.3018684,
+    "ast_hash": "1c0eb16c79d4722f6f2282da8c2a0d91",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/execution/src/error.rs": {
+    "mtime": 1785348288.302869,
+    "ast_hash": "b83751611cd59907033bff47a6527e37",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/execution/src/events.rs": {
+    "mtime": 1785348288.302869,
+    "ast_hash": "25ead2883755d0b504097a33f7d6b171",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/execution/src/executor.rs": {
+    "mtime": 1785348288.302869,
+    "ast_hash": "526305a61a3857124a4fabe573eed54d",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/execution/src/executor/command.rs": {
+    "mtime": 1785348288.303869,
+    "ast_hash": "442091d6601c40d80d83a240149127b3",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/execution/src/executor/file_delete.rs": {
+    "mtime": 1785348288.303869,
+    "ast_hash": "02eb9e34d45162a32c6eee04abf9126e",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/execution/src/executor/file_write.rs": {
+    "mtime": 1785348288.303869,
+    "ast_hash": "00a69e583fd91e689cbea6e124123a36",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/execution/src/executor/path_validation.rs": {
+    "mtime": 1785348288.303869,
+    "ast_hash": "f15b054710514d5b2fca58ef0ae07fb1",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/execution/src/lib.rs": {
+    "mtime": 1785348288.3053741,
+    "ast_hash": "8651af18bf3168d483f2fa4323ddb99e",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/execution/src/policy.rs": {
+    "mtime": 1785348288.3053741,
+    "ast_hash": "4a80ce84b6638067f6e6f65b222a3634",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/execution/src/registry.rs": {
+    "mtime": 1785348288.3063812,
+    "ast_hash": "606ea689b0a841442c60256d44f594fa",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/execution/src/request.rs": {
+    "mtime": 1785348288.3063812,
+    "ast_hash": "b19540b72aaf923844a9727a2bbcb399",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/execution/src/result.rs": {
+    "mtime": 1785348288.3063812,
+    "ast_hash": "9d3205a68776184387c3f5ba68e81d24",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/fixtures/build_failure.json": {
+    "mtime": 1785348288.3073869,
+    "ast_hash": "ff94ccc41f926709d1d23b4e3d3e3b09",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/fixtures/build_success.json": {
+    "mtime": 1785348288.3073869,
+    "ast_hash": "2f6c0559cf491c98c866131a8885eb49",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/fixtures/rust_explain.json": {
+    "mtime": 1785348288.3073869,
+    "ast_hash": "a1e6eb9b7293e05315470125b3dee943",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/kernel/src/ai_context.rs": {
+    "mtime": 1785348288.3083866,
+    "ast_hash": "c5ec86c3fca5b5e8231cec83c82cc2ea",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/kernel/src/engine.rs": {
+    "mtime": 1785348288.3093865,
+    "ast_hash": "d7fd25738bd35aa060800d45385a8549",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/kernel/src/event.rs": {
+    "mtime": 1785348288.3093865,
+    "ast_hash": "291c5782162eac5cfcddba85c470b44a",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/kernel/src/lib.rs": {
+    "mtime": 1785348288.3093865,
+    "ast_hash": "05785004d16a31feb62e9ded7d386fed",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/kernel/src/observation/filter.rs": {
+    "mtime": 1785348288.310387,
+    "ast_hash": "b96c076834071e7b55beab64b8599b5b",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/kernel/src/observation/mod.rs": {
+    "mtime": 1785348288.310387,
+    "ast_hash": "9ffca3ea6860fcb451d3fe123af7b299",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/kernel/src/observation/pipeline.rs": {
+    "mtime": 1785348288.310387,
+    "ast_hash": "cfb6a84004e1f58721e8bc72f92947fc",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/kernel/src/observation/translator.rs": {
+    "mtime": 1785348288.3116534,
+    "ast_hash": "6cf0919731277e49ebc91fa544a94698",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/kernel/src/projection.rs": {
+    "mtime": 1785348288.3116534,
+    "ast_hash": "5a521144a7031878230e4198c5f30097",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/kernel/src/store.rs": {
+    "mtime": 1785348288.3129032,
+    "ast_hash": "36da27cf62a9db20281f4ff5782eac30",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/providers/json/src/lib.rs": {
+    "mtime": 1785348288.3139088,
+    "ast_hash": "a1f4d4d9b081f4be9a83507e2d85a978",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/providers/mock/src/lib.rs": {
+    "mtime": 1785348288.3149078,
+    "ast_hash": "0d52aa3c2e628ff1cd7c27e50ee5fdbb",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/runtime/src/lib.rs": {
+    "mtime": 1785348288.3159075,
+    "ast_hash": "2a9e6249a28bdbdd3b4c77c064f6af7a",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/ADR/ADR-0002-protocol-versioning.md": {
+    "mtime": 1785348288.2883434,
+    "ast_hash": "590218453cc305b900c4fa28b604cfba",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/ADR/ADR-0006-event-store-persistence-strategy.md": {
+    "mtime": 1785348288.289344,
+    "ast_hash": "2aaa863c10978745b5b49a81cba6e765",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/ADR/README.md": {
+    "mtime": 1785348288.289344,
+    "ast_hash": "ed902a48f62bd8ba87af9ff127f79211",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/AGENTS.md": {
+    "mtime": 1785348288.290342,
+    "ast_hash": "58685d588ca17ef1d521d0b894347a61",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/ARCHITECTURE.md": {
+    "mtime": 1785348288.290342,
+    "ast_hash": "8548e1f4fd591c0cfddd7f810985f263",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/README.md": {
+    "mtime": 1785348288.2923408,
+    "ast_hash": "7874820ce245bdfc1c14b450fb2115f5",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/RFC/README.md": {
+    "mtime": 1785348288.293341,
+    "ast_hash": "83d02a969bccf9552c9d9a3bc2ead122",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/RFC/RFC-0001-kernel-event-store.md": {
+    "mtime": 1785348288.293341,
+    "ast_hash": "9ae64ebbc68e483442a370af3d520edb",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/RFC/RFC-0002-projection-engine.md": {
+    "mtime": 1785348288.2943485,
+    "ast_hash": "a315591c38fd34376917155afba28c96",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/RFC/RFC-0003-observation-pipeline.md": {
+    "mtime": 1785348288.2943485,
+    "ast_hash": "8c4c45cc35f5ddbcf6d8dec4943b5658",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/RFC/RFC-0004-execution-engine.md": {
+    "mtime": 1785348288.2943485,
+    "ast_hash": "c8baa948a9ed508d5e7ebad1bb69978b",
+    "semantic_hash": ""
+  },
+  "cotrex-ai/Vision.md": {
+    "mtime": 1785348288.2958567,
+    "ast_hash": "a95aae63eb9a77411a61e9fe6a6711b7",
+    "semantic_hash": ""
   }
 }
