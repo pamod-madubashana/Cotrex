@@ -11,4 +11,4 @@ docs/.docusaurus
 .agents/
 nul
 opencode.json
-graphify-out/*/
+graphify-out/
