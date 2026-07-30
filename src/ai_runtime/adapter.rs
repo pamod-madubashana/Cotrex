@@ -1,11 +1,10 @@
-use super::error::AiRuntimeError;
 use super::result::{AiResult, AiStatus};
 
 /// Convert CapabilityResponse to AiResult.
 #[allow(dead_code)]
 pub fn response_to_result(
     response: cotrex_ai_contract::CapabilityResponse,
-) -> Result<AiResult, AiRuntimeError> {
+) -> AiResult {
     match response {
         cotrex_ai_contract::CapabilityResponse::BuildSummary(resp) => {
             let status = if resp.success {
@@ -24,10 +23,10 @@ pub fn response_to_result(
             if let Some(rec) = resp.recommendation {
                 result = result.with_details(rec);
             }
-            Ok(result)
+            result
         }
         cotrex_ai_contract::CapabilityResponse::ExplainRust(resp) => {
-            Ok(AiResult::success(resp.explanation))
+            AiResult::success(resp.explanation)
         }
     }
 }

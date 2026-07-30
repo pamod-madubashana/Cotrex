@@ -1,7 +1,7 @@
 use cotrex::ai_runtime::adapter;
 use cotrex::ai_runtime::client::AiRuntimeClient;
 use cotrex::ai_runtime::error::AiRuntimeError;
-use cotrex::ai_runtime::result::{AiResult, AiStatus};
+use cotrex::ai_runtime::result::AiStatus;
 use cotrex_ai_contract::*;
 use cotrex_ai_runtime::CapabilityProvider;
 use std::sync::Arc;
@@ -123,7 +123,7 @@ fn test_build_summary_success() {
         max_tokens: 512,
     });
     let response = client.execute(request).unwrap();
-    let result = adapter::response_to_result(response).unwrap();
+    let result = adapter::response_to_result(response);
 
     assert_eq!(result.status, AiStatus::Success);
     assert!(result.summary.contains("succeeded"));
@@ -143,7 +143,7 @@ fn test_build_summary_failure() {
         max_tokens: 512,
     });
     let response = client.execute(request).unwrap();
-    let result = adapter::response_to_result(response).unwrap();
+    let result = adapter::response_to_result(response);
 
     assert_eq!(result.status, AiStatus::Failed);
     assert!(result.summary.contains("failed"));
@@ -161,7 +161,7 @@ fn test_explain_rust_success() {
         max_tokens: 1024,
     });
     let response = client.execute(request).unwrap();
-    let result = adapter::response_to_result(response).unwrap();
+    let result = adapter::response_to_result(response);
 
     assert_eq!(result.status, AiStatus::Success);
     assert!(!result.summary.is_empty());
