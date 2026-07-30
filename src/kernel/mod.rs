@@ -1,4 +1,6 @@
 pub mod context_source;
+pub mod git;
+pub mod snapshot;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,6 +24,7 @@ pub enum KernelError {
 }
 
 pub struct WorkspaceKernel {
+    root: PathBuf,
     store: PersistentEventStore,
     engine: ProjectionEngine,
     pipeline: ObservationPipeline,
@@ -67,6 +70,7 @@ impl WorkspaceKernel {
             .map_err(|e| KernelError::Init(format!("failed to start pipeline: {}", e)))?;
 
         Ok(Self {
+            root,
             store,
             engine,
             pipeline,
@@ -98,6 +102,17 @@ impl WorkspaceKernel {
 
     pub fn summary(&self) -> AiContextSummary {
         self.ai_context.summary()
+    }
+
+    pub fn git(&self) -> git::GitSnapshot {
+        git::GitSnapshot::capture(&self.root)
+    }
+
+    pub fn snapshot(&self) -> snapshot::WorkspaceSnapshot {
+        snapshot::WorkspaceSnapshot {
+            ai: self.summary(),
+            git: self.git(),
+        }
     }
 }
 

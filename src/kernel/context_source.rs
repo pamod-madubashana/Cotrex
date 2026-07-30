@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use cotrex_ai_kernel::AiContextSummary;
 use cotrex_ai_runtime::{ContextSource, InferenceContext, RuntimeError};
 
+use super::snapshot::WorkspaceSnapshot;
 use super::WorkspaceKernel;
 
 pub struct KernelContextSource {
@@ -17,26 +17,29 @@ impl KernelContextSource {
 
 impl ContextSource for KernelContextSource {
     fn context(&self) -> Result<InferenceContext, RuntimeError> {
-        let summary = self.kernel.summary();
-        Ok(summary_to_context(&summary))
+        let snapshot = self.kernel.snapshot();
+        Ok(snapshot_to_context(&snapshot))
     }
 }
 
-fn summary_to_context(summary: &AiContextSummary) -> InferenceContext {
+fn snapshot_to_context(snapshot: &WorkspaceSnapshot) -> InferenceContext {
     use cotrex_ai_kernel::WorkspaceStatus as KStatus;
     use cotrex_ai_runtime::WorkspaceStatus;
 
-    let workspace_status = match summary.workspace_status {
+    let workspace_status = match snapshot.ai.workspace_status {
         KStatus::Empty => WorkspaceStatus::Unknown,
         KStatus::Active => WorkspaceStatus::Modified,
         KStatus::Idle => WorkspaceStatus::Clean,
     };
 
     let mut ctx = InferenceContext {
-        recent_changes: summary.recent_changes.clone(),
+        recent_changes: snapshot.ai.recent_changes.clone(),
         workspace_status,
-        file_count: summary.file_count,
+        file_count: snapshot.ai.file_count,
         hash: 0,
+        git_branch: snapshot.git.branch.clone(),
+        git_dirty: snapshot.git.working_tree_dirty,
+        git_modified_count: snapshot.git.modified_files.len(),
     };
     ctx.hash = ctx.compute_hash();
     ctx
@@ -45,17 +48,26 @@ fn summary_to_context(summary: &AiContextSummary) -> InferenceContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kernel::git::GitSnapshot;
+    use cotrex_ai_kernel::AiContextSummary;
     use cotrex_ai_kernel::WorkspaceStatus as KStatus;
+
+    fn make_snapshot(ai: AiContextSummary) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            ai,
+            git: GitSnapshot::default(),
+        }
+    }
 
     #[test]
     fn summary_empty_maps_to_unknown() {
-        let summary = AiContextSummary {
+        let snapshot = make_snapshot(AiContextSummary {
             workspace_status: KStatus::Empty,
             recent_changes: Vec::new(),
             file_count: 0,
             total_changes: 0,
-        };
-        let ctx = summary_to_context(&summary);
+        });
+        let ctx = snapshot_to_context(&snapshot);
         assert_eq!(
             ctx.workspace_status,
             cotrex_ai_runtime::WorkspaceStatus::Unknown
@@ -66,13 +78,13 @@ mod tests {
 
     #[test]
     fn summary_active_maps_to_modified() {
-        let summary = AiContextSummary {
+        let snapshot = make_snapshot(AiContextSummary {
             workspace_status: KStatus::Active,
             recent_changes: vec!["src/main.rs".to_string()],
             file_count: 5,
             total_changes: 10,
-        };
-        let ctx = summary_to_context(&summary);
+        });
+        let ctx = snapshot_to_context(&snapshot);
         assert_eq!(
             ctx.workspace_status,
             cotrex_ai_runtime::WorkspaceStatus::Modified
@@ -83,13 +95,13 @@ mod tests {
 
     #[test]
     fn summary_idle_maps_to_clean() {
-        let summary = AiContextSummary {
+        let snapshot = make_snapshot(AiContextSummary {
             workspace_status: KStatus::Idle,
             recent_changes: Vec::new(),
             file_count: 3,
             total_changes: 7,
-        };
-        let ctx = summary_to_context(&summary);
+        });
+        let ctx = snapshot_to_context(&snapshot);
         assert_eq!(
             ctx.workspace_status,
             cotrex_ai_runtime::WorkspaceStatus::Clean
@@ -99,14 +111,36 @@ mod tests {
 
     #[test]
     fn context_hash_is_computed() {
-        let summary = AiContextSummary {
+        let snapshot = make_snapshot(AiContextSummary {
             workspace_status: KStatus::Active,
             recent_changes: vec!["a.rs".to_string(), "b.rs".to_string()],
             file_count: 2,
             total_changes: 2,
-        };
-        let ctx = summary_to_context(&summary);
+        });
+        let ctx = snapshot_to_context(&snapshot);
         assert_ne!(ctx.hash, 0);
         assert_eq!(ctx.hash, ctx.compute_hash());
+    }
+
+    #[test]
+    fn git_fields_populated_from_snapshot() {
+        let snapshot = WorkspaceSnapshot {
+            ai: AiContextSummary {
+                workspace_status: KStatus::Active,
+                recent_changes: Vec::new(),
+                file_count: 10,
+                total_changes: 1,
+            },
+            git: GitSnapshot {
+                branch: Some("main".to_string()),
+                working_tree_dirty: true,
+                modified_files: vec!["src/main.rs".to_string()],
+                ..Default::default()
+            },
+        };
+        let ctx = snapshot_to_context(&snapshot);
+        assert_eq!(ctx.git_branch.as_deref(), Some("main"));
+        assert!(ctx.git_dirty);
+        assert_eq!(ctx.git_modified_count, 1);
     }
 }

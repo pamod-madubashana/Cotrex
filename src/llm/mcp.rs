@@ -251,11 +251,24 @@ fn tools_list() -> Value {
             },
             "required": ["source"],
         },
+    }, {
+        "name": "workspace_context",
+        "description": "Return current workspace context: branch, dirty state, modified files, file count, context hash. Requires orchestrator.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
     }]})
 }
 
 /// Dispatch a tools/call to the right handler.
 fn tools_call(params: &Value, cfg: &Config) -> Value {
+    tools_call_with(params, cfg, ORCHESTRATOR.get().map(|o| o.as_ref()))
+}
+
+/// Dispatch with an optional orchestrator reference. Tests inject their own orchestrator
+/// here to avoid global state leakage via OnceLock.
+fn tools_call_with(params: &Value, cfg: &Config, orch: Option<&Orchestrator>) -> Value {
     match params.get("name").and_then(Value::as_str).unwrap_or("") {
         "run" => tool_run(params, cfg),
         "set_agent" => tool_set_agent(params),
@@ -269,8 +282,9 @@ fn tools_call(params: &Value, cfg: &Config) -> Value {
         "graphify_add" => tool_graphify_add(params),
         "graphify_save_result" => tool_graphify_save_result(params),
         "graphify_export" => tool_graphify_export(params),
-        "cotrex_build_summary" => tool_build_summary(params),
-        "cotrex_explain_rust" => tool_explain_rust(params),
+        "cotrex_build_summary" => tool_build_summary_with(params, orch),
+        "cotrex_explain_rust" => tool_explain_rust_with(params, orch),
+        "workspace_context" => tool_workspace_context_with(params, orch),
         other => tool_error(format!("unknown tool: {other}")),
     }
 }
@@ -639,8 +653,12 @@ fn tool_graphify_export(params: &Value) -> Value {
 }
 
 fn tool_build_summary(params: &Value) -> Value {
-    let Some(orch) = ORCHESTRATOR.get() else {
-        return tool_error("AI model not loaded. Run: cotrex model install qwen2.5-0.5b".into());
+    tool_build_summary_with(params, ORCHESTRATOR.get().map(|o| o.as_ref()))
+}
+
+fn tool_build_summary_with(params: &Value, orch: Option<&Orchestrator>) -> Value {
+    let Some(orch) = orch else {
+        return tool_error("Orchestrator not initialized.".into());
     };
 
     let args = &params["arguments"];
@@ -678,8 +696,12 @@ fn tool_build_summary(params: &Value) -> Value {
 }
 
 fn tool_explain_rust(params: &Value) -> Value {
-    let Some(orch) = ORCHESTRATOR.get() else {
-        return tool_error("AI model not loaded. Run: cotrex model install qwen2.5-0.5b".into());
+    tool_explain_rust_with(params, ORCHESTRATOR.get().map(|o| o.as_ref()))
+}
+
+fn tool_explain_rust_with(params: &Value, orch: Option<&Orchestrator>) -> Value {
+    let Some(orch) = orch else {
+        return tool_error("Orchestrator not initialized.".into());
     };
 
     let args = &params["arguments"];
@@ -715,9 +737,106 @@ fn tool_explain_rust(params: &Value) -> Value {
     }
 }
 
+fn tool_workspace_context_with(params: &Value, orch: Option<&Orchestrator>) -> Value {
+    let Some(orch) = orch else {
+        return tool_error("Orchestrator not initialized.".into());
+    };
+
+    // Route through Orchestrator to prove the full context flow:
+    // MCP → Orchestrator → ContextSource → InferenceContext → PromptAssembler → Provider
+    let request = OrchestrationRequest {
+        capability: CapabilityRequest::BuildSummary(BuildSummaryRequest {
+            metadata: RequestMetadata::new(),
+            command: "workspace_context".into(),
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            prompt: "Return workspace context".into(),
+            temperature: 0.0,
+            max_tokens: 0,
+        }),
+        context: None,
+    };
+
+    match orch.execute(request) {
+        Ok(resp) => json!({
+            "content": [{"type": "text", "text": resp.text().to_string()}],
+            "isError": false,
+        }),
+        Err(e) => tool_error(e.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    /// Local mock provider for MCP tests.
+    struct MockProvider;
+
+    impl cotrex_ai_runtime::CapabilityProvider for MockProvider {
+        fn info(&self) -> cotrex_ai_contract::ProviderInfo {
+            cotrex_ai_contract::ProviderInfo {
+                name: "mock".into(),
+                version: "0.1.0".into(),
+                supported_capabilities: vec![
+                    cotrex_ai_contract::CapabilityKind::BuildSummary,
+                    cotrex_ai_contract::CapabilityKind::ExplainRust,
+                ],
+            }
+        }
+
+        fn health(&self) -> cotrex_ai_contract::ProviderHealth {
+            cotrex_ai_contract::ProviderHealth::Healthy
+        }
+
+        fn execute(
+            &self,
+            request: cotrex_ai_contract::CapabilityRequest,
+        ) -> Result<cotrex_ai_contract::CapabilityResponse, cotrex_ai_runtime::RuntimeError>
+        {
+            match request {
+                cotrex_ai_contract::CapabilityRequest::BuildSummary(req) => {
+                    Ok(cotrex_ai_contract::CapabilityResponse::BuildSummary(
+                        cotrex_ai_contract::BuildSummaryResponse {
+                            success: req.exit_code == 0,
+                            summary: "Build completed successfully.".into(),
+                            recommendation: None,
+                        },
+                    ))
+                }
+                cotrex_ai_contract::CapabilityRequest::ExplainRust(req) => {
+                    Ok(cotrex_ai_contract::CapabilityResponse::ExplainRust(
+                        cotrex_ai_contract::ExplainRustResponse {
+                            explanation: format!("mock: {}", req.question),
+                        },
+                    ))
+                }
+            }
+        }
+    }
+
+    fn test_orchestrator() -> Orchestrator {
+        use cotrex_ai_runtime::{
+            DefaultCapabilityResponseParser, DefaultOutputParser, DefaultPromptAssembler,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel =
+            cotrex::kernel::WorkspaceKernel::open(tmp.path().to_path_buf()).unwrap();
+        let context_source = Arc::new(
+            cotrex::kernel::context_source::KernelContextSource::new(Arc::new(kernel)),
+        );
+
+        Orchestrator::new(
+            Arc::new(MockProvider),
+            context_source,
+            Arc::new(DefaultPromptAssembler),
+            Arc::new(DefaultOutputParser),
+            Arc::new(DefaultCapabilityResponseParser),
+        )
+    }
 
     #[test]
     fn initialize_reports_protocol_and_name() {
@@ -776,5 +895,78 @@ mod tests {
     fn call_without_command_is_tool_error() {
         let r = tools_call(&json!({"name": "run", "arguments": {}}), &Config::default());
         assert_eq!(r["isError"], true);
+    }
+
+    #[test]
+    fn tools_list_exposes_workspace_context() {
+        let r = dispatch("tools/list", &json!({}), &Config::default())
+            .unwrap()
+            .unwrap();
+        let names: Vec<&str> = r["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(names.contains(&"workspace_context"));
+    }
+
+    #[test]
+    fn workspace_context_without_orchestrator_errors() {
+        let r = tools_call_with(
+            &json!({"name": "workspace_context", "arguments": {}}),
+            &Config::default(),
+            None,
+        );
+        assert_eq!(r["isError"], true);
+        assert!(r["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Orchestrator not initialized"));
+    }
+
+    #[test]
+    fn workspace_context_through_orchestrator() {
+        let orch = test_orchestrator();
+        let r = tools_call_with(
+            &json!({"name": "workspace_context", "arguments": {}}),
+            &Config::default(),
+            Some(&orch),
+        );
+        assert_eq!(r["isError"], false);
+        assert!(!r["content"][0]["text"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn build_summary_through_mock_provider() {
+        let orch = test_orchestrator();
+        let r = tools_call_with(
+            &json!({"name": "cotrex_build_summary", "arguments": {
+                "command": "cargo test",
+                "exit_code": 0,
+                "stderr": ""
+            }}),
+            &Config::default(),
+            Some(&orch),
+        );
+        assert_eq!(r["isError"], false);
+        assert!(r["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Build completed successfully"));
+    }
+
+    #[test]
+    fn unknown_tool_returns_error() {
+        let r = tools_call_with(
+            &json!({"name": "bogus_tool", "arguments": {}}),
+            &Config::default(),
+            None,
+        );
+        assert_eq!(r["isError"], true);
+        assert!(r["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("unknown tool"));
     }
 }
