@@ -1,8 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,12 +29,6 @@ fn send_request(child: &mut Child, request: &Value) -> Option<Value> {
     let stdout = child.stdout.as_mut().expect("stdout");
     let mut reader = BufReader::new(stdout);
     let mut response_line = String::new();
-
-    // Set a timeout via non-blocking read
-    reader
-        .get_mut()
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .ok();
 
     match reader.read_line(&mut response_line) {
         Ok(0) => None,

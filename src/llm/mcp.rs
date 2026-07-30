@@ -652,10 +652,6 @@ fn tool_graphify_export(params: &Value) -> Value {
     }
 }
 
-fn tool_build_summary(params: &Value) -> Value {
-    tool_build_summary_with(params, ORCHESTRATOR.get().map(|o| o.as_ref()))
-}
-
 fn tool_build_summary_with(params: &Value, orch: Option<&Orchestrator>) -> Value {
     let Some(orch) = orch else {
         return tool_error("Orchestrator not initialized.".into());
@@ -693,10 +689,6 @@ fn tool_build_summary_with(params: &Value, orch: Option<&Orchestrator>) -> Value
         }
         Err(e) => tool_error(e.to_string()),
     }
-}
-
-fn tool_explain_rust(params: &Value) -> Value {
-    tool_explain_rust_with(params, ORCHESTRATOR.get().map(|o| o.as_ref()))
 }
 
 fn tool_explain_rust_with(params: &Value, orch: Option<&Orchestrator>) -> Value {
@@ -737,7 +729,7 @@ fn tool_explain_rust_with(params: &Value, orch: Option<&Orchestrator>) -> Value 
     }
 }
 
-fn tool_workspace_context_with(params: &Value, orch: Option<&Orchestrator>) -> Value {
+fn tool_workspace_context_with(_params: &Value, orch: Option<&Orchestrator>) -> Value {
     let Some(orch) = orch else {
         return tool_error("Orchestrator not initialized.".into());
     };
