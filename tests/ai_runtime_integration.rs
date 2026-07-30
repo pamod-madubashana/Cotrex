@@ -1,11 +1,10 @@
-use std::sync::Arc;
-use cotrex_ai_runtime::CapabilityProvider;
-use cotrex_ai_contract::*;
 use cotrex::ai_runtime::adapter;
 use cotrex::ai_runtime::client::AiRuntimeClient;
 use cotrex::ai_runtime::error::AiRuntimeError;
-use cotrex::ai_runtime::intent::AiCapabilityIntent;
 use cotrex::ai_runtime::result::{AiResult, AiStatus};
+use cotrex_ai_contract::*;
+use cotrex_ai_runtime::CapabilityProvider;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Test providers
@@ -18,10 +17,7 @@ impl CapabilityProvider for TestProvider {
         ProviderInfo {
             name: "test".into(),
             version: "0.1.0".into(),
-            supported_capabilities: vec![
-                CapabilityKind::BuildSummary,
-                CapabilityKind::ExplainRust,
-            ],
+            supported_capabilities: vec![CapabilityKind::BuildSummary, CapabilityKind::ExplainRust],
         }
     }
 
@@ -29,7 +25,10 @@ impl CapabilityProvider for TestProvider {
         ProviderHealth::Healthy
     }
 
-    fn execute(&self, request: CapabilityRequest) -> Result<CapabilityResponse, cotrex_ai_runtime::RuntimeError> {
+    fn execute(
+        &self,
+        request: CapabilityRequest,
+    ) -> Result<CapabilityResponse, cotrex_ai_runtime::RuntimeError> {
         match request {
             CapabilityRequest::BuildSummary(req) => {
                 Ok(CapabilityResponse::BuildSummary(BuildSummaryResponse {
@@ -62,7 +61,10 @@ impl CapabilityProvider for BuildOnlyProvider {
         ProviderHealth::Healthy
     }
 
-    fn execute(&self, request: CapabilityRequest) -> Result<CapabilityResponse, cotrex_ai_runtime::RuntimeError> {
+    fn execute(
+        &self,
+        request: CapabilityRequest,
+    ) -> Result<CapabilityResponse, cotrex_ai_runtime::RuntimeError> {
         match request {
             CapabilityRequest::BuildSummary(req) => {
                 Ok(CapabilityResponse::BuildSummary(BuildSummaryResponse {
@@ -71,7 +73,9 @@ impl CapabilityProvider for BuildOnlyProvider {
                     recommendation: None,
                 }))
             }
-            _ => Err(cotrex_ai_runtime::RuntimeError::Capability(CapabilityError::InvalidRequest)),
+            _ => Err(cotrex_ai_runtime::RuntimeError::Capability(
+                CapabilityError::InvalidRequest,
+            )),
         }
     }
 }
@@ -91,8 +95,13 @@ impl CapabilityProvider for FailingProvider {
         ProviderHealth::Unhealthy { reason: "test" }
     }
 
-    fn execute(&self, _request: CapabilityRequest) -> Result<CapabilityResponse, cotrex_ai_runtime::RuntimeError> {
-        Err(cotrex_ai_runtime::RuntimeError::Provider("simulated failure".into()))
+    fn execute(
+        &self,
+        _request: CapabilityRequest,
+    ) -> Result<CapabilityResponse, cotrex_ai_runtime::RuntimeError> {
+        Err(cotrex_ai_runtime::RuntimeError::Provider(
+            "simulated failure".into(),
+        ))
     }
 }
 
@@ -103,13 +112,16 @@ impl CapabilityProvider for FailingProvider {
 #[test]
 fn test_build_summary_success() {
     let client = AiRuntimeClient::new(Arc::new(TestProvider));
-    let intent = AiCapabilityIntent::BuildSummary {
+    let request = CapabilityRequest::BuildSummary(BuildSummaryRequest {
+        metadata: RequestMetadata::new(),
         command: "cargo build".into(),
+        exit_code: 0,
         stdout: String::new(),
         stderr: String::new(),
-        exit_code: 0,
-    };
-    let request = adapter::intent_to_request(&intent).unwrap();
+        prompt: String::new(),
+        temperature: 0.1,
+        max_tokens: 512,
+    });
     let response = client.execute(request).unwrap();
     let result = adapter::response_to_result(response).unwrap();
 
@@ -120,13 +132,16 @@ fn test_build_summary_success() {
 #[test]
 fn test_build_summary_failure() {
     let client = AiRuntimeClient::new(Arc::new(TestProvider));
-    let intent = AiCapabilityIntent::BuildSummary {
+    let request = CapabilityRequest::BuildSummary(BuildSummaryRequest {
+        metadata: RequestMetadata::new(),
         command: "cargo build".into(),
+        exit_code: 1,
         stdout: String::new(),
         stderr: "error".into(),
-        exit_code: 1,
-    };
-    let request = adapter::intent_to_request(&intent).unwrap();
+        prompt: String::new(),
+        temperature: 0.1,
+        max_tokens: 512,
+    });
     let response = client.execute(request).unwrap();
     let result = adapter::response_to_result(response).unwrap();
 
@@ -137,11 +152,14 @@ fn test_build_summary_failure() {
 #[test]
 fn test_explain_rust_success() {
     let client = AiRuntimeClient::new(Arc::new(TestProvider));
-    let intent = AiCapabilityIntent::ExplainRust {
+    let request = CapabilityRequest::ExplainRust(ExplainRustRequest {
+        metadata: RequestMetadata::new(),
         source: "let x = 1;".into(),
         question: "what is x?".into(),
-    };
-    let request = adapter::intent_to_request(&intent).unwrap();
+        prompt: String::new(),
+        temperature: 0.2,
+        max_tokens: 1024,
+    });
     let response = client.execute(request).unwrap();
     let result = adapter::response_to_result(response).unwrap();
 
@@ -152,11 +170,14 @@ fn test_explain_rust_success() {
 #[test]
 fn test_unsupported_capability() {
     let client = AiRuntimeClient::new(Arc::new(BuildOnlyProvider));
-    let intent = AiCapabilityIntent::ExplainRust {
+    let request = CapabilityRequest::ExplainRust(ExplainRustRequest {
+        metadata: RequestMetadata::new(),
         source: "let x = 1;".into(),
         question: "what is x?".into(),
-    };
-    let request = adapter::intent_to_request(&intent).unwrap();
+        prompt: String::new(),
+        temperature: 0.2,
+        max_tokens: 1024,
+    });
     let result = client.execute(request);
 
     assert!(result.is_err());
@@ -167,13 +188,16 @@ fn test_unsupported_capability() {
 #[test]
 fn test_provider_failure() {
     let client = AiRuntimeClient::new(Arc::new(FailingProvider));
-    let intent = AiCapabilityIntent::BuildSummary {
+    let request = CapabilityRequest::BuildSummary(BuildSummaryRequest {
+        metadata: RequestMetadata::new(),
         command: "cargo build".into(),
+        exit_code: 1,
         stdout: String::new(),
         stderr: String::new(),
-        exit_code: 1,
-    };
-    let request = adapter::intent_to_request(&intent).unwrap();
+        prompt: String::new(),
+        temperature: 0.1,
+        max_tokens: 512,
+    });
     let result = client.execute(request);
 
     assert!(result.is_err());
@@ -195,23 +219,6 @@ fn test_error_mapping_from_runtime_error() {
     let display = format!("{ai_err}");
     assert!(!display.contains("CUDA"));
     assert!(display.contains("provider failure"));
-}
-
-#[test]
-fn test_intent_kind_mapping() {
-    let build_intent = AiCapabilityIntent::BuildSummary {
-        command: "cargo build".into(),
-        stdout: String::new(),
-        stderr: String::new(),
-        exit_code: 0,
-    };
-    assert_eq!(adapter::intent_kind(&build_intent), CapabilityKind::BuildSummary);
-
-    let explain_intent = AiCapabilityIntent::ExplainRust {
-        source: "let x = 1;".into(),
-        question: "what is x?".into(),
-    };
-    assert_eq!(adapter::intent_kind(&explain_intent), CapabilityKind::ExplainRust);
 }
 
 #[test]
