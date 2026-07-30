@@ -3,5 +3,7 @@
 pub mod cli;
 #[allow(clippy::module_inception)]
 mod dispatch;
+#[cfg(feature = "local-model")]
+pub mod factory;
 
 pub use dispatch::run;

@@ -181,7 +181,10 @@ fn test_unsupported_capability() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(matches!(err, cotrex_ai_runtime::RuntimeError::InvalidResponse));
+    assert!(matches!(
+        err,
+        cotrex_ai_runtime::RuntimeError::InvalidResponse
+    ));
 }
 
 #[test]

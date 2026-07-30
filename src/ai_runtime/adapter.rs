@@ -2,9 +2,7 @@ use super::result::{AiResult, AiStatus};
 
 /// Convert CapabilityResponse to AiResult.
 #[allow(dead_code)]
-pub fn response_to_result(
-    response: cotrex_ai_contract::CapabilityResponse,
-) -> AiResult {
+pub fn response_to_result(response: cotrex_ai_contract::CapabilityResponse) -> AiResult {
     match response {
         cotrex_ai_contract::CapabilityResponse::BuildSummary(resp) => {
             let status = if resp.success {
