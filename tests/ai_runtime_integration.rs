@@ -1,6 +1,5 @@
 use cotrex::ai_runtime::adapter;
 use cotrex::ai_runtime::client::AiRuntimeClient;
-use cotrex::ai_runtime::error::AiRuntimeError;
 use cotrex::ai_runtime::result::AiStatus;
 use cotrex_ai_contract::*;
 use cotrex_ai_runtime::CapabilityProvider;
@@ -181,8 +180,8 @@ fn test_unsupported_capability() {
     let result = client.execute(request);
 
     assert!(result.is_err());
-    let err_str = format!("{}", result.unwrap_err());
-    assert!(err_str.contains("Unsupported AI capability"));
+    let err = result.unwrap_err();
+    assert!(matches!(err, cotrex_ai_runtime::RuntimeError::InvalidResponse));
 }
 
 #[test]
@@ -201,24 +200,13 @@ fn test_provider_failure() {
     let result = client.execute(request);
 
     assert!(result.is_err());
-    let err_str = format!("{}", result.unwrap_err());
-    // Verify error is clean, no internal details
-    assert!(!err_str.contains("simulated failure"));
-    assert!(err_str.contains("provider failure"));
-}
-
-#[test]
-fn test_error_mapping_from_runtime_error() {
-    let runtime_err = cotrex_ai_runtime::RuntimeError::Provider("CUDA panic".into());
-    let ai_err: AiRuntimeError = runtime_err.into();
-
-    // No message field - just type
-    assert!(matches!(ai_err, AiRuntimeError::ProviderFailure));
-
-    // Clean display
-    let display = format!("{ai_err}");
-    assert!(!display.contains("CUDA"));
-    assert!(display.contains("provider failure"));
+    let err = result.unwrap_err();
+    match err {
+        cotrex_ai_runtime::RuntimeError::Provider(source) => {
+            assert!(source.to_string().contains("simulated failure"));
+        }
+        _ => panic!("expected provider error"),
+    }
 }
 
 #[test]

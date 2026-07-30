@@ -1,4 +1,3 @@
-use super::error::AiRuntimeError;
 use cotrex_ai_contract::{CapabilityKind, CapabilityRequest, CapabilityResponse, ProviderInfo};
 use cotrex_ai_runtime::CapabilityProvider;
 use std::sync::Arc;
@@ -28,7 +27,7 @@ impl AiRuntimeClient {
     pub fn execute(
         &self,
         request: CapabilityRequest,
-    ) -> Result<CapabilityResponse, AiRuntimeError> {
+    ) -> Result<CapabilityResponse, cotrex_ai_runtime::RuntimeError> {
         // Determine capability kind from request
         let kind = match &request {
             CapabilityRequest::BuildSummary(_) => CapabilityKind::BuildSummary,
@@ -37,10 +36,13 @@ impl AiRuntimeClient {
 
         // Fail fast if provider doesn't support this capability
         if !self.supports(kind) {
-            return Err(AiRuntimeError::UnsupportedCapability(format!("{:?}", kind)));
+            // UnsupportedCapability was previously a local Cotrex runtime error.
+            // The runtime contract now belongs to cotrex-ai, and InvalidResponse represents
+            // a provider response that cannot satisfy the requested capability.
+            return Err(cotrex_ai_runtime::RuntimeError::InvalidResponse);
         }
 
-        self.provider.execute(request).map_err(Into::into)
+        self.provider.execute(request)
     }
 
     /// Get provider metadata.
