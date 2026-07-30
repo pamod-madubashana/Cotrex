@@ -6,8 +6,14 @@
 //! sync and tokio-free. Swap to the rmcp SDK only if we need the full spec or an async transport.
 
 use std::io::{self, BufRead, Write};
+use std::sync::{Arc, OnceLock};
 
 use serde_json::{json, Value};
+
+use cotrex_ai_contract::{
+    BuildSummaryRequest, CapabilityRequest, CapabilityResponse, ExplainRustRequest, RequestMetadata,
+};
+use cotrex_ai_runtime::{OrchestrationRequest, Orchestrator};
 
 use crate::config::Config;
 use crate::core::intent::Intent;
@@ -15,6 +21,8 @@ use crate::core::orchestrate::{self, Options};
 use crate::llm::LlmConfig;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
+
+static ORCHESTRATOR: OnceLock<Arc<Orchestrator>> = OnceLock::new();
 
 /// Run the stdio JSON-RPC loop until stdin closes. stdout is the protocol channel — nothing else
 /// may write to it (the execution core writes to in-memory buffers instead).
@@ -57,6 +65,14 @@ pub fn serve() -> ! {
         }
     }
     std::process::exit(0);
+}
+
+/// Run the MCP server with an orchestrator available.
+/// The orchestrator is lazily initialized on first tool call.
+#[cfg_attr(not(feature = "local-model"), allow(dead_code))]
+pub fn serve_with_ai(orchestrator: Arc<Orchestrator>) -> ! {
+    ORCHESTRATOR.set(orchestrator).ok();
+    serve()
 }
 
 fn send(out: &mut impl Write, msg: Value) {
@@ -210,6 +226,31 @@ fn tools_list() -> Value {
             },
             "required": ["format"],
         },
+    }, {
+        "name": "cotrex_build_summary",
+        "description": "Summarize a build result (stdout/stderr) using local AI inference. Returns a concise explanation of what went wrong and how to fix it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The build command that was run"},
+                "exit_code": {"type": "integer", "description": "Process exit code"},
+                "stdout": {"type": "string", "description": "Standard output from the build"},
+                "stderr": {"type": "string", "description": "Standard error from the build"},
+                "prompt": {"type": "string", "description": "Optional custom prompt for the AI"},
+            },
+            "required": ["command", "exit_code", "stderr"],
+        },
+    }, {
+        "name": "cotrex_explain_rust",
+        "description": "Explain a Rust code snippet using local AI inference. Returns a concise explanation of what the code does, ownership patterns, or potential issues.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "The Rust source code to explain"},
+                "question": {"type": "string", "description": "What to explain about the code (default: explain what it does)"},
+            },
+            "required": ["source"],
+        },
     }]})
 }
 
@@ -228,6 +269,8 @@ fn tools_call(params: &Value, cfg: &Config) -> Value {
         "graphify_add" => tool_graphify_add(params),
         "graphify_save_result" => tool_graphify_save_result(params),
         "graphify_export" => tool_graphify_export(params),
+        "cotrex_build_summary" => tool_build_summary(params),
+        "cotrex_explain_rust" => tool_explain_rust(params),
         other => tool_error(format!("unknown tool: {other}")),
     }
 }
@@ -592,6 +635,83 @@ fn tool_graphify_export(params: &Value) -> Value {
             "isError": false,
         }),
         Err(e) => tool_error(e),
+    }
+}
+
+fn tool_build_summary(params: &Value) -> Value {
+    let Some(orch) = ORCHESTRATOR.get() else {
+        return tool_error("AI model not loaded. Run: cotrex model install qwen2.5-0.5b".into());
+    };
+
+    let args = &params["arguments"];
+    let request = OrchestrationRequest {
+        capability: CapabilityRequest::BuildSummary(BuildSummaryRequest {
+            metadata: RequestMetadata::new(),
+            command: args["command"].as_str().unwrap_or("").into(),
+            exit_code: args["exit_code"].as_i64().unwrap_or(0) as i32,
+            stdout: args["stdout"].as_str().unwrap_or("").into(),
+            stderr: args["stderr"].as_str().unwrap_or("").into(),
+            prompt: args
+                .get("prompt")
+                .and_then(Value::as_str)
+                .unwrap_or("Summarize this build output concisely.")
+                .into(),
+            temperature: 0.1,
+            max_tokens: 256,
+        }),
+        context: None,
+    };
+
+    match orch.execute(request) {
+        Ok(resp) => {
+            let success = match &resp.capability {
+                CapabilityResponse::BuildSummary(r) => r.success,
+                _ => true,
+            };
+            json!({
+                "content": [{"type": "text", "text": resp.text().to_string()}],
+                "isError": !success,
+            })
+        }
+        Err(e) => tool_error(e.to_string()),
+    }
+}
+
+fn tool_explain_rust(params: &Value) -> Value {
+    let Some(orch) = ORCHESTRATOR.get() else {
+        return tool_error("AI model not loaded. Run: cotrex model install qwen2.5-0.5b".into());
+    };
+
+    let args = &params["arguments"];
+    let source = args["source"].as_str().unwrap_or("");
+    let question = args
+        .get("question")
+        .and_then(Value::as_str)
+        .unwrap_or("Explain what this code does");
+
+    let prompt = format!(
+        "Explain this Rust code:\n{}\n\nQuestion: {}",
+        source, question
+    );
+
+    let request = OrchestrationRequest {
+        capability: CapabilityRequest::ExplainRust(ExplainRustRequest {
+            metadata: RequestMetadata::new(),
+            source: source.into(),
+            question: question.into(),
+            prompt,
+            temperature: 0.1,
+            max_tokens: 256,
+        }),
+        context: None,
+    };
+
+    match orch.execute(request) {
+        Ok(resp) => json!({
+            "content": [{"type": "text", "text": resp.text().to_string()}],
+            "isError": false,
+        }),
+        Err(e) => tool_error(e.to_string()),
     }
 }
 

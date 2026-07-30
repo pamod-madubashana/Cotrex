@@ -6,6 +6,7 @@ resolver = "2"
 [workspace.dependencies]
 cotrex_ai_contract = { package = "contract", path = "cotrex-ai/contract" }
 cotrex_ai_runtime = { package = "runtime", path = "cotrex-ai/runtime" }
+cotrex_ai_kernel = { package = "kernel", path = "cotrex-ai/kernel" }
 
 [package]
 name = "cotrex"
@@ -29,6 +30,10 @@ path = "src/main.rs"
 name = "cotrex"
 path = "src/lib.rs"
 
+[features]
+default = []
+local-model = ["dep:llama-cpp-provider"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
@@ -43,3 +48,9 @@ regex = "1"
 indicatif = "0.17"
 cotrex_ai_contract.workspace = true
 cotrex_ai_runtime.workspace = true
+cotrex_ai_kernel.workspace = true
+thiserror = "2"
+llama-cpp-provider = { path = "cotrex-ai/providers/llama-cpp", optional = true }
+
+[dev-dependencies]
+tempfile = "3"

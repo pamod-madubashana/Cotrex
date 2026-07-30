@@ -113,7 +113,44 @@ pub fn dispatch_cmd(cmd: Cmd) -> Option<Intent> {
             // is executed inside a project directory, not during initial setup.
             exit(0);
         }
-        Cmd::Mcp => llm::mcp::serve(),
+        Cmd::Mcp => {
+            #[cfg(feature = "local-model")]
+            {
+                use cotrex_ai_runtime::assembler::DefaultPromptAssembler;
+                use cotrex_ai_runtime::capability_parser::DefaultCapabilityResponseParser;
+                use cotrex_ai_runtime::context::NullContextSource;
+                use cotrex_ai_runtime::parser::DefaultOutputParser;
+                use cotrex_ai_runtime::Orchestrator;
+                use std::sync::Arc;
+
+                let factory = crate::dispatch::factory::LocalModelFactory;
+                let provider = Arc::new(cotrex_ai_runtime::LazyProvider::new(factory));
+
+                let context_source: Arc<dyn cotrex_ai_runtime::ContextSource> =
+                    match std::env::current_dir()
+                        .ok()
+                        .and_then(|cwd| crate::kernel::WorkspaceKernel::open(cwd).ok())
+                    {
+                        Some(kernel) => {
+                            Arc::new(crate::kernel::context_source::KernelContextSource::new(
+                                Arc::new(kernel),
+                            ))
+                        }
+                        None => Arc::new(NullContextSource),
+                    };
+
+                let orchestrator = Arc::new(Orchestrator::new(
+                    provider,
+                    context_source,
+                    Arc::new(DefaultPromptAssembler),
+                    Arc::new(DefaultOutputParser),
+                    Arc::new(DefaultCapabilityResponseParser),
+                ));
+                llm::mcp::serve_with_ai(orchestrator)
+            }
+            #[cfg(not(feature = "local-model"))]
+            llm::mcp::serve()
+        }
         Cmd::InstallRtk => {
             match config::install::install() {
                 Ok(path) => println!("rtk installed at {}", path.display()),
