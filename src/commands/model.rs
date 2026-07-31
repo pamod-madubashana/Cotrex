@@ -325,5 +325,99 @@ pub fn run(action: &ModelAction) {
                 }
             }
         }
+        ModelAction::Test { model_id } => {
+            run_model_test(model_id);
+        }
+    }
+}
+
+/// Run model qualification tests.
+fn run_model_test(model_id: &str) {
+    use crate::agent::qualify;
+
+    // Resolve model ID to filename from registry
+    let (filename, _url, _size) = match resolve_model(model_id) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("cotrex: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Check if model is installed by filename
+    let installed = list_installed().unwrap_or_default();
+    let stem = filename.replace(".gguf", "");
+    let is_installed = installed.iter().any(|i| i == &stem);
+    if !is_installed {
+        eprintln!("cotrex: model '{model_id}' is not installed.");
+        eprintln!("  Install it first: cotrex model install {model_id}");
+        std::process::exit(2);
+    }
+
+    // Check for existing qualification
+    if let Some(existing) = qualify::load_qualification(model_id) {
+        let current_hash = qualify::compute_prompt_hash();
+        if existing.prompt_hash != current_hash {
+            eprintln!("  Previous qualification is stale (prompts changed). Re-testing...");
+        } else {
+            eprintln!("  Using cached qualification (use --force to re-test).");
+            print_qualification_summary(&existing);
+            return;
+        }
+    }
+
+    eprintln!("Testing model: {model_id}\n");
+
+    // Run qualification
+    let result = qualify::run_qualification(model_id);
+
+    // Print results
+    for test in &result.tests {
+        let status = if test.passed { "PASS" } else { "FAIL" };
+        let reason = test
+            .reason
+            .as_ref()
+            .map(|r| format!(" — {r}"))
+            .unwrap_or_default();
+        println!("[{status}] {}{}", test.name, reason);
+    }
+
+    println!("\nCapability summary:\n");
+    for (cap, status) in &result.capabilities {
+        println!("  {cap}: {status}");
+    }
+
+    // Save qualification
+    if let Err(e) = qualify::save_qualification(&result) {
+        eprintln!("\nFailed to save qualification: {e}");
+    } else {
+        println!("\nReport:\n  .cotrex/qualifications/{}.json", model_id);
+    }
+
+    // Exit with appropriate code
+    let all_passed = result
+        .capabilities
+        .values()
+        .all(|s| *s == qualify::CapabilityStatus::Passed);
+    if !all_passed {
+        std::process::exit(1);
+    }
+}
+
+/// Print qualification summary.
+fn print_qualification_summary(result: &crate::agent::qualify::QualificationResult) {
+    for test in &result.tests {
+        let status = if test.passed { "PASS" } else { "FAIL" };
+        let reason = test
+            .reason
+            .as_ref()
+            .map(|r| format!(" — {r}"))
+            .unwrap_or_default();
+        println!("[{status}] {}{}", test.name, reason);
+    }
+
+    println!("\nCapability summary:\n");
+    for (cap, status) in &result.capabilities {
+        println!("  {cap}: {status}");
     }
 }
