@@ -50,7 +50,7 @@ cotrex_ai_contract.workspace = true
 cotrex_ai_runtime.workspace = true
 cotrex_ai_kernel.workspace = true
 thiserror = "2"
-llama-cpp-provider = { path = "cotrex-ai/providers/llama-cpp", optional = true }
+llama-cpp-provider = { path = "cotrex-ai/providers/llama-cpp", optional = true, features = ["real-inference"] }
 
 [dev-dependencies]
 tempfile = "3"
