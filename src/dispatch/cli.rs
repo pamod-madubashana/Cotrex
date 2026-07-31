@@ -170,6 +170,11 @@ pub enum ModelAction {
         /// Model ID (e.g. qwen2.5-0.5b) or 'latest'.
         model_id: Option<String>,
     },
+    /// Test if a model is qualified for the Cotrex agent runtime.
+    Test {
+        /// Model ID to test (e.g. qwen2.5-1.5b).
+        model_id: String,
+    },
 }
 
 pub const SUBCOMMANDS: &[&str] = &[

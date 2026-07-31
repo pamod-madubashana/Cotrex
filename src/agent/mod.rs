@@ -2,4 +2,5 @@
 
 pub mod permission;
 pub mod prompt;
+pub mod qualify;
 pub mod tool;

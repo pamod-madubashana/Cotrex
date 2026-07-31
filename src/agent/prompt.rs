@@ -57,39 +57,33 @@ question briefly and practically. No preamble, no markdown headings.";
 // decides and replies with JSON: {"run":"<command>"}, {"tool":"<name>","args":{...}}, or {"answer":"<text>"}.
 const DECISION_SYSTEM: &str = "You are an assistant in a developer's CURRENT working directory. \
 FIRST decide whether answering even needs the machine. Each turn, reply with EXACTLY ONE JSON object:\n\
-- {\"answer\":\"<text>\"} — answer the user directly. Use this RIGHT AWAY when no local information is \
-needed: a greeting, small talk, a general or coding question, or anything you already know. Do NOT \
-run a command just to have run one. SYNTHESIZE; never paste raw command output. Wrap any file \
-tree/table/aligned layout in a fenced ``` code block.\n\
+- {\"answer\":\"<text>\"} — answer the user directly. ONLY for greetings, small talk, or things you \
+already know (language syntax, general coding concepts). NEVER answer with just 'this is the current \
+directory' or similar empty responses.\n\
 - {\"run\":\"<command>\",\"say\":\"<one line>\"} — to inspect the project (files, dirs, git, build \
 state) OR to CARRY OUT an action the user asked for (build, test, run, format, lint, fix…). You have \
 a REAL shell in THIS directory — you are not sandboxed; never say you lack access to the code or \
 build system, just run the command. `say` is one short first-person line telling the user what \
-you're doing or what you just learned, like a person thinking aloud: \"Let me build it in release.\", \
-\"Not there — let me check main.rs.\", \"Found them.\" One command; when inspecting, go ONE level at \
-a time, skip vendored/build dirs (vendor, target, node_modules, .git, dist), never dump the whole \
-recursive tree.\n\
+you're doing or what you just learned, like a person thinking aloud.\n\
 - {\"tool\":\"<name>\",\"args\":{...},\"say\":\"<one line>\"} — use a built-in tool for file operations. \
 Available tools: read({path}), write({path,content}), edit({path,old,new}), glob({pattern}), \
-grep({pattern,path?}). Use tools instead of shell commands when possible — they are faster and \
-more reliable for reading, searching, and editing files.\n\
-When getting to know a project, FIRST find what's ignored — read its .gitignore (or just use `git \
-ls-files`, which already honors it) — and never list or recurse into ignored paths (node_modules, \
-target, dist, build artifacts). A raw recursive listing that walks ignored dirs is wrong.\n\
-Answer directly for greetings and general/coding questions; RUN commands or TOOLS to inspect the \
-project or to do what the user asked — don't refuse or ask permission for a normal dev command. \
-Use the fewest that do the job, and cite the concrete location (path:line) when you find what was \
-asked. Always finish with an {\"answer\"} summarizing what you did or found. Output ONLY the JSON.\n\
+grep({pattern,path?}). Use tools instead of shell commands when possible.\n\
+IMPORTANT RULES FOR PROJECT QUESTIONS:\n\
+- When the user asks 'what is this project', 'describe the project', 'what does this code do', or \
+ANY question about the project: you MUST first read key files (README.md, Cargo.toml, package.json, \
+etc.) and THEN synthesize a real summary. NEVER answer with just 'current working directory'.\n\
+- When getting to know a project, FIRST find what's ignored — read its .gitignore (or just use `git \
+ls-files`, which already honors it) — and never list or recurse into ignored paths.\n\
+- Always finish with an {\"answer\"} summarizing what you did or found. Output ONLY the JSON.\n\
 Examples:\n\
 Request: hi → {\"answer\":\"Hi! What would you like to do in this project?\"}\n\
 Request: what does the ? operator do in Rust → {\"answer\":\"It propagates errors: on Err it returns \
 early, on Ok it unwraps.\"}\n\
 Request: build this project in release → {\"run\":\"cargo build --release\",\"say\":\"Building it in \
 release mode.\"}\n\
-Request: what is this project → {\"run\":\"git ls-files\",\"say\":\"Let me list the tracked files to \
-see what this is.\"}\n\
-Request: where are user roles implemented → {\"tool\":\"grep\",\"args\":{\"pattern\":\"role\",\"path\":\"src\"},\"say\":\"Let me search the source for role handling.\"}\n\
-Request: read main.rs → {\"tool\":\"read\",\"args\":{\"path\":\"src/main.rs\"},\"say\":\"Reading main.rs.\"}";
+Request: what is this project → {\"tool\":\"read\",\"args\":{\"path\":\"README.md\"},\"say\":\"Let me \
+read the README to understand the project.\"}\n\
+Request: where are user roles implemented → {\"tool\":\"grep\",\"args\":{\"pattern\":\"role\",\"path\":\"src\"},\"say\":\"Let me search the source for role handling.\"}";
 
 /// The header (system prompt) bound to a category, if it is known.
 pub fn header(category: &str) -> Option<&'static str> {
@@ -107,6 +101,21 @@ pub fn category_header(category: &str) -> Result<&'static str, String> {
     } else {
         header(category).ok_or_else(|| format!("unknown category '{category}'"))
     }
+}
+
+/// Get the decision system prompt (used by qualification tests).
+pub fn decision_system() -> &'static str {
+    DECISION_SYSTEM
+}
+
+/// Get the decision system prompt with model-specific shell instructions.
+pub fn decision_system_with_model(_model_id: &str) -> String {
+    let shell = if cfg!(windows) {
+        "Any command runs in Windows PowerShell — use PowerShell cmdlets and syntax."
+    } else {
+        "Any command runs in a POSIX bash shell — use POSIX tools."
+    };
+    format!("{DECISION_SYSTEM} {shell}")
 }
 
 // Roles: `cotrex <role> "<task>"` offloads a small task to a role-specific model and returns its
@@ -384,6 +393,55 @@ pub fn fulfill(
     opts: &Options,
     max_steps: usize,
 ) -> Result<i32, String> {
+    // Pre-process: gather project context for common "what is this" queries so even a small model
+    // can produce a useful summary without needing to decide to use tools itself.
+    let lower = task.to_lowercase();
+    let is_project_query = lower.contains("what is this project")
+        || lower.contains("what does this project")
+        || lower.contains("describe this project")
+        || lower.contains("what is this code")
+        || lower.contains("what does this code");
+
+    let task = if is_project_query {
+        // Gather project info directly and inject into the prompt
+        let mut info = String::new();
+
+        // Try to read README
+        if let Ok(readme) = std::fs::read_to_string("README.md") {
+            let preview: String = readme.lines().take(40).collect::<Vec<_>>().join("\n");
+            info.push_str(&format!("README.md:\n{preview}\n\n"));
+        }
+
+        // Try to read Cargo.toml or package.json
+        if let Ok(toml) = std::fs::read_to_string("Cargo.toml") {
+            let preview: String = toml.lines().take(30).collect::<Vec<_>>().join("\n");
+            info.push_str(&format!("Cargo.toml:\n{preview}\n\n"));
+        } else if let Ok(pkg) = std::fs::read_to_string("package.json") {
+            let preview: String = pkg.lines().take(30).collect::<Vec<_>>().join("\n");
+            info.push_str(&format!("package.json:\n{preview}\n\n"));
+        }
+
+        // Get file tree (shallow)
+        let tree = std::process::Command::new("git")
+            .args(["ls-files", "--short"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        if !tree.is_empty() {
+            let lines: Vec<&str> = tree.lines().take(50).collect();
+            info.push_str(&format!("Project files:\n{}\n", lines.join("\n")));
+        }
+
+        if !info.is_empty() {
+            format!("{task}\n\n--- Project Context ---\n{info}\n--- End Context ---\n\nBased on the above, summarize what this project is.")
+        } else {
+            task.to_string()
+        }
+    } else {
+        task.to_string()
+    };
+    let task = &task;
     // Generate for the shell we actually run on (see `exec_capture`): PowerShell on Windows, POSIX
     // bash elsewhere. Mismatching them is what makes a Windows run try to execute Linux commands.
     let shell = if cfg!(windows) {
@@ -423,8 +481,32 @@ git); never PowerShell or cmd syntax."
                 print_answer(&text, mode);
                 return Ok(0);
             }
-            Decision::Tool { tool, args, say } => {
-                say_step(say.as_deref(), mode);
+            Decision::Tool { tool, args, say: _ } => {
+                // Show which tool is being used
+                let tool_label = match tool.name {
+                    "read" => {
+                        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("...");
+                        format!("reading {path}")
+                    }
+                    "grep" => {
+                        let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("...");
+                        format!("searching {pattern}")
+                    }
+                    "glob" => {
+                        let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("...");
+                        format!("finding {pattern}")
+                    }
+                    "edit" => {
+                        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("...");
+                        format!("editing {path}")
+                    }
+                    "write" => {
+                        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("...");
+                        format!("writing {path}")
+                    }
+                    other => format!("using {other}"),
+                };
+                say_step(Some(&tool_label), mode);
                 let tool_key = format!("tool:{}", tool.name);
                 // Check for duplicate tool+args (loop prevention)
                 let call_sig = format!(
@@ -721,9 +803,11 @@ const SAY_COLOR: &str = "\x1b[38;5;153m";
 pub const MAX_STEPS: usize = 6;
 
 /// Maximum number of retry attempts for transient LLM failures.
+#[allow(dead_code)]
 const MAX_RETRIES: usize = 3;
 
 /// Initial backoff duration in milliseconds.
+#[allow(dead_code)]
 const INITIAL_BACKOFF_MS: u64 = 500;
 
 /// Print an answer to stdout. User mode renders markdown to ANSI (headers, lists, syntax-highlighted
@@ -756,6 +840,7 @@ pub enum Decision {
     Tool {
         tool: &'static crate::agent::tool::Tool,
         args: serde_json::Value,
+        #[allow(dead_code)]
         say: Option<String>,
     },
     Answer(String),
@@ -1171,6 +1256,7 @@ fn one_call(
 /// otherwise the spinner covers the whole call and nothing is shown — used for the decision turns,
 /// whose raw `{"run":…}` JSON should never reach the user (the model's `say` narrates instead).
 /// `content` is always accumulated and returned. stdout is untouched.
+#[allow(dead_code)]
 fn stream(
     resp: ureq::Response,
     live: bool,
