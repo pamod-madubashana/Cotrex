@@ -66,7 +66,6 @@ pub fn run(
         &Intent::from_command(exec_command(file)),
         out,
         err,
-        None,
         opts,
     )?;
 
@@ -86,7 +85,6 @@ pub fn run(
         &Intent::from_command("git diff --stat"),
         out,
         err,
-        None,
         &verify_opts,
     )?;
 

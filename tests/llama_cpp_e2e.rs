@@ -7,7 +7,6 @@
 //! These tests use the real GGUF fixture and validate the entire pipeline,
 //! not just the provider in isolation.
 
-#![cfg(feature = "local-model")]
 
 use std::sync::Arc;
 

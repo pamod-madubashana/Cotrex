@@ -4,9 +4,11 @@
 //! for the prompt system. No remote API needed.
 
 use cotrex_ai_runtime::{ChatMessage, LocalModel, ResolvedConfig};
-use std::sync::{Mutex, OnceLock};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Local model backend used by Cotrex prompt execution.
+#[derive(Clone)]
 pub struct LocalBackend;
 
 impl Default for LocalBackend {
@@ -20,6 +22,27 @@ impl LocalBackend {
         let inf = LOCAL_INFERENCE.get_or_init(|| Mutex::new(LocalInference::new()));
         let mut guard = inf.lock().map_err(|e| format!("lock: {e}"))?;
         guard.infer_with_system(system, prompt)
+    }
+
+    /// Streaming inference: runs on a worker thread, emits tokens via the
+    /// provided channel sender as they are generated, then sends a final
+    /// `None` sentinel to signal completion.
+    pub fn generate_stream(
+        &self,
+        system: String,
+        prompt: String,
+        tx: Sender<String>,
+    ) -> thread::JoinHandle<Result<String, String>> {
+        thread::spawn(move || {
+            let inf = LOCAL_INFERENCE.get_or_init(|| Mutex::new(LocalInference::new()));
+            let mut guard = inf.lock().map_err(|e| format!("lock: {e}"))?;
+            let callback: Arc<Mutex<dyn FnMut(&str) + Send + 'static>> = Arc::new(Mutex::new(
+                move |token: &str| {
+                    let _ = tx.send(token.to_string());
+                },
+            ));
+            guard.infer_with_system_stream(&system, &prompt, Some(callback))
+        })
     }
 }
 
@@ -62,6 +85,8 @@ impl LocalInference {
             .load(&config)
             .map_err(|e| format!("failed to load model: {e}"))?;
 
+        drop(_guard);
+
         self.model = Some(Box::new(model));
         self.config = Some(config);
         Ok(())
@@ -78,6 +103,7 @@ impl LocalInference {
             messages,
             temperature: 0.0,
             max_tokens: 512,
+            token_callback: None,
         };
 
         let _guard = StderrSuppress::new();
@@ -93,6 +119,48 @@ impl LocalInference {
     pub fn infer_with_system(&mut self, system: &str, prompt: &str) -> Result<String, String> {
         let messages = vec![ChatMessage::system(system), ChatMessage::user(prompt)];
         self.infer_messages(messages)
+    }
+
+    /// Streaming variant: attaches a token callback to the inference request
+    /// so the provider emits each generated text piece as it is produced.
+    pub fn infer_with_system_stream(
+        &mut self,
+        system: &str,
+        prompt: &str,
+        token_callback: Option<Arc<Mutex<dyn FnMut(&str) + Send + 'static>>>,
+    ) -> Result<String, String> {
+        let messages = vec![ChatMessage::system(system), ChatMessage::user(prompt)];
+        self.infer_messages_stream(messages, token_callback)
+    }
+
+    /// Streaming variant of `infer_messages`.
+    /// Suppresses C-level stderr during inference so llama.cpp's context-
+    /// construction messages (~50 lines) are silenced.  Tokens are delivered
+    /// through the callback; the caller uses `console_write` to display them
+    /// via a direct console handle that bypasses the fd 2 suppression.
+    fn infer_messages_stream(
+        &mut self,
+        messages: Vec<ChatMessage>,
+        token_callback: Option<Arc<Mutex<dyn FnMut(&str) + Send + 'static>>>,
+    ) -> Result<String, String> {
+        self.ensure_loaded()?;
+
+        let model = self.model.as_ref().unwrap();
+        let request = cotrex_ai_runtime::InferenceRequest {
+            prompt: cotrex_ai_runtime::Prompt::new(""),
+            messages,
+            temperature: 0.0,
+            max_tokens: 512,
+            token_callback,
+        };
+
+        let _guard = StderrSuppress::new();
+        let response = model
+            .infer(request)
+            .map_err(|e| format!("inference failed: {e}"))?;
+        drop(_guard);
+
+        Ok(response.text)
     }
 }
 
@@ -133,6 +201,8 @@ extern "C" {
     fn _close(fd: i32) -> i32;
 }
 
+use std::thread;
+
 /// Global local inference instance (lazily initialized).
 static LOCAL_INFERENCE: OnceLock<Mutex<LocalInference>> = OnceLock::new();
 
@@ -148,3 +218,149 @@ pub fn infer_local(system: &str, user: &str) -> Result<String, String> {
     let backend = LocalBackend::default();
     backend.generate(system, user)
 }
+
+/// Streaming inference: spawns a worker thread, returns `(JoinHandle, Receiver)`.
+/// The receiver yields tokens as they are generated.
+pub fn infer_local_stream(
+    system: &str,
+    user: &str,
+) -> (
+    thread::JoinHandle<Result<String, String>>,
+    std::sync::mpsc::Receiver<String>,
+) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let backend = LocalBackend::default();
+    let handle = backend.generate_stream(system.to_string(), user.to_string(), tx);
+    (handle, rx)
+}
+
+// ---------------------------------------------------------------------------
+// Console writer with stderr fallback
+//
+// In the streaming path the worker thread redirects fd 2 to NUL via
+// `StderrSuppress` to silence llama.cpp's C-level noise.  Rust's
+// `std::io::stderr()` also goes through fd 2, so writing to stderr would be
+// swallowed.
+//
+// `console_write` solves this in two ways:
+//
+//  1. **Real console window** (Windows Terminal, cmd.exe):
+//     Opens `CONOUT$` via `CreateFileA` and writes with `WriteConsoleA`,
+//     which bypasses fd 2 entirely.  Virtual terminal processing is enabled
+//     on first use so ANSI escape codes work.
+//
+//  2. **Pipe-based terminal** (IDE terminals, `cargo run 2>&1`):
+//     `WriteConsoleA` fails because `CONOUT$` isn't a console handle.
+//     Falls back to `WriteFile` on the same handle, which works for pipes.
+//     StderrSuppress will swallow this output, but at least we don't panic.
+//     In this environment the user sees the spinner briefly during context
+//     setup (before StderrSuppress kicks in) and the final answer after
+//     cursor restore.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+mod console {
+    use std::sync::OnceLock;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateFileA(
+            lpfilename: *const i8,
+            dwdesiredaccess: u32,
+            dwsharemode: u32,
+            lpsecurityattributes: *const std::ffi::c_void,
+            dwcreationdisposition: u32,
+            dwflagsandattributes: u32,
+            htemplatefile: isize,
+        ) -> isize;
+        fn WriteConsoleA(
+            hconsoleoutput: isize,
+            lpbuffer: *const u8,
+            nnumberofcharstowrite: u32,
+            lpnumberofcharswritten: *mut u32,
+            lpreserved: *const std::ffi::c_void,
+        ) -> i32;
+        fn WriteFile(
+            hfile: isize,
+            lpbuffer: *const u8,
+            nnumberofbytestowrite: u32,
+            lpnumberofbyteswritten: *mut u32,
+            lpoverlapped: *const std::ffi::c_void,
+        ) -> i32;
+        fn GetConsoleMode(hconsolehandle: isize, lpmode: *mut u32) -> i32;
+        fn SetConsoleMode(hconsolehandle: isize, dwmode: u32) -> i32;
+    }
+
+    const GENERIC_WRITE: u32 = 0x40000000;
+    const FILE_SHARE_WRITE: u32 = 0x00000002;
+    const OPEN_EXISTING: u32 = 3;
+    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+
+    static CONOUT: OnceLock<isize> = OnceLock::new();
+
+    fn get_handle() -> Option<isize> {
+        let handle = *CONOUT.get_or_init(|| unsafe {
+            let h = CreateFileA(
+                b"CONOUT$\0".as_ptr() as *const i8,
+                GENERIC_WRITE,
+                FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                0,
+            );
+            if h != -1isize {
+                let mut mode: u32 = 0;
+                if GetConsoleMode(h, &mut mode) != 0 {
+                    SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+                }
+            }
+            h
+        });
+        if handle == -1isize { None } else { Some(handle) }
+    }
+
+    /// Write bytes to the console.  Uses `WriteConsoleA` when available (real
+    /// console window) and falls back to `WriteFile` for pipes / redirected
+    /// output.  In both cases the handle bypasses fd 2 so `StderrSuppress`
+    /// does not swallow our output.
+    pub fn write(data: &[u8]) {
+        if let Some(handle) = get_handle() {
+            let mut written: u32 = 0;
+            let ok = unsafe {
+                WriteConsoleA(
+                    handle,
+                    data.as_ptr(),
+                    data.len() as u32,
+                    &mut written,
+                    std::ptr::null(),
+                )
+            };
+            if ok == 0 {
+                // Not a console handle (pipe / redirect) — try WriteFile.
+                unsafe {
+                    WriteFile(
+                        handle,
+                        data.as_ptr(),
+                        data.len() as u32,
+                        &mut written,
+                        std::ptr::null(),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod console {
+    /// On non-Windows, write directly to stderr (no fd 2 suppression conflict).
+    pub fn write(data: &[u8]) {
+        use std::io::Write;
+        let mut err = std::io::stderr();
+        let _ = err.write_all(data);
+    }
+}
+
+pub use console::write as console_write;
+

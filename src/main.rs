@@ -15,7 +15,6 @@ mod usage;
 
 fn main() {
     // Suppress llama.cpp verbose logging before any backend init
-    #[cfg(feature = "local-model")]
     unsafe {
         extern "C" fn noop_log(
             _level: std::os::raw::c_int,
