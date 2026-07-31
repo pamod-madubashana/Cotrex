@@ -9,7 +9,6 @@ use crate::config;
 use crate::core::intent::Intent;
 use crate::core::orchestrate;
 use crate::graphify;
-use crate::llm;
 use crate::script;
 
 use clap::{CommandFactory, Parser};
@@ -35,9 +34,17 @@ pub fn run() {
         }
         if is_passthrough(first) {
             if rest.len() >= 2 {
+                // Multiple bare args → command (e.g. `cotrex git status`).
                 run_intent(Intent::from_command(rest.join(" ")));
-            } else {
+            } else if model_mode {
+                // -m flag present → single word is a prompt (e.g. cotrex -m "hi").
                 dispatch_one(&rest[0], mode);
+            } else if let Some(suggestion) = suggest_subcommand(first) {
+                eprintln!("cotrex: unknown command '{first}'. Did you mean '{suggestion}'?");
+                exit(2);
+            } else {
+                eprintln!("cotrex: '{first}' is not a command. Use quotes for a prompt: cotrex -m \"{first}\"");
+                exit(2);
             }
             return;
         }
@@ -67,6 +74,50 @@ fn is_passthrough(first: &str) -> bool {
     !first.starts_with('-') && !SUBCOMMANDS.contains(&first)
 }
 
+/// Check if a bare argument looks like a misspelled subcommand (edit distance ≤ 2).
+/// Returns the closest subcommand name, or `None` if nothing is close enough.
+fn suggest_subcommand(input: &str) -> Option<&'static str> {
+    let mut best: Option<(&'static str, usize)> = None;
+    for &sub in SUBCOMMANDS {
+        let d = edit_distance(input, sub);
+        if d <= 1 {
+            match best {
+                Some((_, bd)) if d < bd => best = Some((sub, d)),
+                None => best = Some((sub, d)),
+                _ => {}
+            }
+        }
+    }
+    best.map(|(name, _)| name)
+}
+
+/// Optimal string alignment distance — like Levenshtein but counts adjacent transpositions as
+/// a single edit.  This catches typos like "mpc" → "mcp" (distance 1, not 2).
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let (m, n) = (a.len(), b.len());
+    // Full matrix needed for transposition look-back.
+    let mut d = vec![vec![0usize; n + 1]; m + 1];
+    for i in 0..=m {
+        d[i][0] = i;
+    }
+    for j in 0..=n {
+        d[0][j] = j;
+    }
+    for i in 1..=m {
+        for j in 1..=n {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + cost);
+            }
+        }
+    }
+    d[m][n]
+}
+
 /// Dispatch a parsed CLI subcommand. Returns the intent for commands that fall through to
 /// `run_intent`, or exits directly for self-contained subcommands.
 pub fn dispatch_cmd(cmd: Cmd) -> Option<Intent> {
@@ -91,10 +142,8 @@ pub fn dispatch_cmd(cmd: Cmd) -> Option<Intent> {
             crate::commands::demo::run();
             exit(0);
         }
-        Cmd::Run { llm, command } => {
-            let mut i = Intent::from_command(command);
-            i.llm = llm;
-            Some(i)
+        Cmd::Run { llm: _, command } => {
+            Some(Intent::from_command(command))
         }
         Cmd::Script { file } => {
             let cfg = config::load();
@@ -103,6 +152,7 @@ pub fn dispatch_cmd(cmd: Cmd) -> Option<Intent> {
                 ultra_compact: cfg.rtk_verbosity == "ultra-compact",
                 llm_on_failure: false,
                 footer: true,
+                quiet: true,
             };
             let mut out = io::stdout();
             let mut err = io::stderr();
@@ -134,42 +184,37 @@ pub fn dispatch_cmd(cmd: Cmd) -> Option<Intent> {
             exit(0);
         }
         Cmd::Mcp => {
-            #[cfg(feature = "local-model")]
-            {
-                use cotrex_ai_runtime::assembler::DefaultPromptAssembler;
-                use cotrex_ai_runtime::capability_parser::DefaultCapabilityResponseParser;
-                use cotrex_ai_runtime::context::NullContextSource;
-                use cotrex_ai_runtime::parser::DefaultOutputParser;
-                use cotrex_ai_runtime::Orchestrator;
-                use std::sync::Arc;
+            use cotrex_ai_runtime::assembler::DefaultPromptAssembler;
+            use cotrex_ai_runtime::capability_parser::DefaultCapabilityResponseParser;
+            use cotrex_ai_runtime::context::NullContextSource;
+            use cotrex_ai_runtime::parser::DefaultOutputParser;
+            use cotrex_ai_runtime::Orchestrator;
+            use std::sync::Arc;
 
-                let factory = crate::dispatch::factory::LocalModelFactory;
-                let provider = Arc::new(cotrex_ai_runtime::LazyProvider::new(factory));
+            let factory = crate::dispatch::factory::LocalModelFactory;
+            let provider = Arc::new(cotrex_ai_runtime::LazyProvider::new(factory));
 
-                let context_source: Arc<dyn cotrex_ai_runtime::ContextSource> =
-                    match std::env::current_dir()
-                        .ok()
-                        .and_then(|cwd| cotrex::kernel::WorkspaceKernel::open(cwd).ok())
-                    {
-                        Some(kernel) => {
-                            Arc::new(cotrex::kernel::context_source::KernelContextSource::new(
-                                Arc::new(kernel),
-                            ))
-                        }
-                        None => Arc::new(NullContextSource),
-                    };
+            let context_source: Arc<dyn cotrex_ai_runtime::ContextSource> =
+                match std::env::current_dir()
+                    .ok()
+                    .and_then(|cwd| cotrex::kernel::WorkspaceKernel::open(cwd).ok())
+                {
+                    Some(kernel) => {
+                        Arc::new(cotrex::kernel::context_source::KernelContextSource::new(
+                            Arc::new(kernel),
+                        ))
+                    }
+                    None => Arc::new(NullContextSource),
+                };
 
-                let orchestrator = Arc::new(Orchestrator::new(
-                    provider,
-                    context_source,
-                    Arc::new(DefaultPromptAssembler),
-                    Arc::new(DefaultOutputParser),
-                    Arc::new(DefaultCapabilityResponseParser),
-                ));
-                llm::mcp::serve_with_ai(orchestrator)
-            }
-            #[cfg(not(feature = "local-model"))]
-            llm::mcp::serve()
+            let orchestrator = Arc::new(Orchestrator::new(
+                provider,
+                context_source,
+                Arc::new(DefaultPromptAssembler),
+                Arc::new(DefaultOutputParser),
+                Arc::new(DefaultCapabilityResponseParser),
+            ));
+            crate::llm::mcp::serve_with_ai(orchestrator)
         }
         Cmd::InstallRtk => {
             match config::install::install() {
@@ -358,28 +403,15 @@ pub fn run_intent(intent: Intent) {
     let opts = orchestrate::Options {
         raw: cfg.compression == "off",
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
-        llm_on_failure: cfg.compression == "llm" && !model_mode,
+        llm_on_failure: false,
         footer: !model_mode,
-    };
-
-    let llm_cfg = if intent.llm || opts.llm_on_failure {
-        match llm::LlmConfig::from_config(&cfg) {
-            Some(c) => Some(c),
-            None if intent.llm => {
-                eprintln!("cotrex: LLM compression needs an API key — run `cotrex setup`");
-                exit(2);
-            }
-            None => None,
-        }
-    } else {
-        None
+        quiet: true,
     };
 
     if model_mode {
         let mut buf = Vec::new();
         let mut err_sink = io::sink();
-        let code = match orchestrate::run(&intent, &mut buf, &mut err_sink, llm_cfg.as_ref(), &opts)
-        {
+        let code = match orchestrate::run(&intent, &mut buf, &mut err_sink, &opts) {
             Ok(c) => c,
             Err(e) => {
                 let result = serde_json::json!({
@@ -456,7 +488,7 @@ pub fn run_intent(intent: Intent) {
     } else {
         let mut out = io::stdout();
         let mut err = io::stderr();
-        match orchestrate::run(&intent, &mut out, &mut err, llm_cfg.as_ref(), &opts) {
+        match orchestrate::run(&intent, &mut out, &mut err, &opts) {
             Ok(code) => {
                 crate::usage::record(&intent.command, intent.command.len(), 0, code, "cli");
                 if cfg.graph_auto {
@@ -506,32 +538,13 @@ pub fn dispatch_one(arg: &str, mode: agent::prompt::Mode) {
     }
 }
 
-pub fn load_llm_or_exit(_cfg: &config::Config) -> llm::LlmConfig {
-    // Local model doesn't need URL/key — return a dummy config
-    #[cfg(feature = "local-model")]
-    {
-        llm::LlmConfig {
-            url: String::new(),
-            key: String::new(),
-            model: "local".into(),
-        }
-    }
-    #[cfg(not(feature = "local-model"))]
-    match llm::LlmConfig::from_config(cfg) {
-        Some(c) => c,
-        None => {
-            eprintln!("cotrex: prompts need an API key — run `cotrex setup`");
-            exit(2);
-        }
-    }
-}
-
 pub fn exec_opts(cfg: &config::Config) -> orchestrate::Options {
     orchestrate::Options {
         raw: cfg.compression == "off",
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
         llm_on_failure: false,
         footer: true,
+        quiet: true,
     }
 }
 
@@ -544,13 +557,11 @@ pub fn run_assistant(task: &str, mode: agent::prompt::Mode) -> ! {
     fulfill(task, mode);
 }
 
-/// Shared task fulfilment: pick the endpoint/key from config and let the prompt decide run-vs-answer.
+/// Shared task fulfilment: let the prompt decide run-vs-answer using the local model.
 fn fulfill(task: &str, mode: agent::prompt::Mode) -> ! {
     let cfg = config::load();
-    let base = load_llm_or_exit(&cfg);
     match agent::prompt::fulfill(
         task,
-        &base,
         mode,
         &exec_opts(&cfg),
         agent::prompt::MAX_STEPS,
@@ -564,20 +575,19 @@ fn fulfill(task: &str, mode: agent::prompt::Mode) -> ! {
 }
 
 /// Category / JSON prompts run through the same agentic decide-run-or-answer loop as roles — each
-/// pair's category becomes the persona header, on the configured model. No special chat-only path.
+/// pair's category becomes the persona header, on the local model. No special chat-only path.
 fn run_prompt(pairs: Vec<(String, String)>, mode: agent::prompt::Mode) -> ! {
     let cfg = config::load();
-    let base = load_llm_or_exit(&cfg);
     let opts = exec_opts(&cfg);
     for (cat, text) in &pairs {
-        let header = match agent::prompt::category_header(cat) {
+        let _header = match agent::prompt::category_header(cat) {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("cotrex: {e}");
                 exit(2);
             }
         };
-        if let Err(e) = agent::prompt::fulfill(text, &base, mode, &opts, agent::prompt::MAX_STEPS) {
+        if let Err(e) = agent::prompt::fulfill(text, mode, &opts, agent::prompt::MAX_STEPS) {
             eprintln!("cotrex: {e}");
             exit(1);
         }
@@ -597,5 +607,21 @@ mod tests {
         assert!(!is_passthrough("setup"));
         assert!(!is_passthrough("--help"));
         assert!(!is_passthrough("-V"));
+    }
+
+    #[test]
+    fn suggest_catches_typos() {
+        assert_eq!(suggest_subcommand("mpc"), Some("mcp"));    // transposition
+        assert_eq!(suggest_subcommand("mc"), Some("mcp"));     // deletion
+        assert_eq!(suggest_subcommand("rn"), Some("run"));     // deletion
+        assert_eq!(suggest_subcommand("setu"), Some("setup")); // deletion
+    }
+
+    #[test]
+    fn suggest_ignores_unrelated_words() {
+        assert_eq!(suggest_subcommand("git"), None);
+        assert_eq!(suggest_subcommand("cargo"), None);
+        assert_eq!(suggest_subcommand("hello"), None);
+        assert_eq!(suggest_subcommand("hi"), None);
     }
 }

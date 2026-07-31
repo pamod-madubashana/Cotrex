@@ -104,22 +104,6 @@ fn run_graphify(args: &[&str], inherit_stdio: bool) -> bool {
     let mut cmd = Command::new(&bin);
     cmd.args(&cmd_args);
 
-    // Pass cotrex LLM config to graphify as env vars
-    let cfg = crate::config::load();
-    if !cfg.llm_key.is_empty() {
-        cmd.env("OPENAI_API_KEY", &cfg.llm_key);
-    }
-    if !cfg.llm_url.is_empty() {
-        // graphify expects base URL without /chat/completions suffix
-        let base_url = cfg
-            .llm_url
-            .trim_end_matches("/chat/completions")
-            .trim_end_matches('/');
-        cmd.env("OPENAI_BASE_URL", base_url);
-    }
-    if !cfg.llm_model.is_empty() {
-        cmd.env("OPENAI_MODEL", &cfg.llm_model);
-    }
     // Workaround: graphify 0.9.4 PyInstaller bundle passes --multiprocessing-fork
     // to its own CLI on Windows, crashing all workers. Disable fork mode.
     cmd.env("PYTHONMULTIPROCESSING_FORK", "0");

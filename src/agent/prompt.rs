@@ -10,20 +10,19 @@
 //!   step ("Let me check…") in its own words, streams the running command's output, then the answer.
 //! - **Model** (`cotrex -m "…"`): no spinner, no narration — just the output on stdout.
 //!
-//! Every call is streamed; the LLM key comes from config.
+//! Every call goes through the local llama.cpp model.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, IsTerminal, Write};
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::agent::tool::{self, OutputLimiter, ToolContext, BUILTINS};
 use crate::core::intent::Intent;
 use crate::core::orchestrate::{self, Options};
-use crate::llm::LlmConfig;
 
 /// Who's reading the output.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -49,33 +48,29 @@ of reasoning — nothing more.",
     ),
 ];
 
-// Used when a category prompt has no recognized category (rare: a JSON object with an empty key).
-const DEFAULT_HEADER: &str =
-    "You are Cotrex. Answer briefly and use the local context when it helps.";
-
-const DEFAULT_ROLE: &str = "You are Cotrex, a local execution assistant.\n\nYour job:\n- understand the request\n- inspect the local project when needed\n- run shell commands or use tools when appropriate\n- return a concise final answer\n\nDo not create subagents or plans. Do not pretend to be multiple agents.";
-
-// A task either runs a command (and we return the REAL output) or is answered in text. The model
-// decides and replies with JSON: {"run":"<command>"}, {"tool":"<name>","args":{...}}, or {"answer":"<text>"}.
-const DECISION_SYSTEM: &str = r#"
-You are Cotrex, a local developer execution engine.
+// Single unified system prompt used by every code path (agentic loop, text generation, category
+// fallback). `build_system_prompt` appends the target-shell note after it.
+const COTREX_SYSTEM_PROMPT: &str = r#"You are Cotrex, a local developer execution engine.
 
 You operate inside the user's current working directory.
 
 Your job:
+- understand the request
 - inspect the local environment when information is required
 - execute requested developer actions
-- return useful results
+- return useful, concise results
 - avoid guessing about files, code, configuration, or project state
+
+Do not create subagents or plans. Do not pretend to be multiple agents.
 
 Every response MUST be exactly one valid JSON object.
 Never output markdown or explanations outside JSON.
 
 Use {"answer":"text"} for direct answers.
 Use {"run":"command","say":"short reason"} for shell commands.
-Use {"tool":"name","args":{},"say":"short reason"} for file tools.
-Prefer tools for file operations and targeted shell commands for everything else.
-"#;
+Use {"tool":"name","args":{},"say":"short reason"} ONLY for these built-in file tools: read, write, edit, glob, grep.
+Never invent tool names — if the action is not a file operation, use {"run":"command"} instead.
+Prefer tools for file operations and shell commands for everything else."#;
 
 /// The header (system prompt) bound to a category, if it is known.
 pub fn header(category: &str) -> Option<&'static str> {
@@ -89,7 +84,7 @@ pub fn header(category: &str) -> Option<&'static str> {
 /// key) falls back to the default; an unknown one is an error.
 pub fn category_header(category: &str) -> Result<&'static str, String> {
     if category.is_empty() {
-        Ok(DEFAULT_HEADER)
+        Ok(COTREX_SYSTEM_PROMPT)
     } else {
         header(category).ok_or_else(|| format!("unknown category '{category}'"))
     }
@@ -97,7 +92,7 @@ pub fn category_header(category: &str) -> Result<&'static str, String> {
 
 /// Get the decision system prompt (used by qualification tests).
 pub fn decision_system() -> &'static str {
-    DECISION_SYSTEM
+    COTREX_SYSTEM_PROMPT
 }
 
 /// Get the decision system prompt with model-specific shell instructions.
@@ -111,10 +106,11 @@ pub fn decision_system_with_model(_model_id: &str) -> String {
 }
 
 fn build_system_prompt(shell: &str) -> String {
-    format!("{DEFAULT_ROLE}\n\n{DECISION_SYSTEM}\n\n{shell}")
+    format!("{COTREX_SYSTEM_PROMPT}\n\n{shell}")
 }
 
 /// Keep the old role hook as a stub so callers can still compile while the single-assistant flow is used.
+#[allow(dead_code)]
 pub fn role(_name: &str) -> Option<(&'static str, &'static str, &'static str, usize)> {
     None
 }
@@ -374,13 +370,84 @@ pub fn parse_json(s: &str) -> Result<Vec<(String, String)>, String> {
     Ok(pairs)
 }
 
+/// Whether `COTREX_PROFILE` is enabled.
+fn agent_profiling() -> bool {
+    std::env::var("COTREX_PROFILE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Step-by-step profile of an entire agent execution.
+/// Each inference call, tool call, and shell command is recorded with its
+/// wall-clock duration so you can see exactly where time goes.
+#[derive(Debug, Default)]
+struct AgentProfile {
+    steps: Vec<StepProfile>,
+    total: Duration,
+}
+
+/// One step in an agent execution.
+#[derive(Debug)]
+enum StepProfile {
+    Inference {
+        label: String,
+        duration: Duration,
+        profile: Option<cotrex_ai_runtime::InferProfile>,
+    },
+    Tool {
+        name: &'static str,
+        duration: Duration,
+    },
+    Shell {
+        cmd: String,
+        duration: Duration,
+    },
+}
+
+impl AgentProfile {
+    fn print(&self) {
+        eprintln!("  ┌─ Agent Profile ─────────────────────────────┐");
+        for step in &self.steps {
+            match step {
+                StepProfile::Inference { label, duration, profile } => {
+                    eprintln!("  │ {:<20} {:>7.1} ms", label, duration.as_secs_f64() * 1000.0);
+                    if let Some(p) = profile {
+                        eprintln!("  │   ├─ chat_template  {:>5.1} ms",
+                            p.chat_template.as_secs_f64() * 1000.0);
+                        eprintln!("  │   ├─ tokenize       {:>5.1} ms",
+                            p.tokenize.as_secs_f64() * 1000.0);
+                        eprintln!("  │   ├─ new_context    {:>5.1} ms",
+                            p.new_context.as_secs_f64() * 1000.0);
+                        eprintln!("  │   ├─ prompt_decode  {:>5.1} ms ({} tok, {:.0} tok/s)",
+                            p.prompt_decode.as_secs_f64() * 1000.0,
+                            p.prompt_tokens,
+                            p.prompt_tok_s());
+                        eprintln!("  │   └─ generation    {:>5.1} ms ({} tok, {:.1} tok/s)",
+                            p.generation.as_secs_f64() * 1000.0,
+                            p.generated_tokens,
+                            p.gen_tok_s());
+                    }
+                }
+                StepProfile::Tool { name, duration } => {
+                    eprintln!("  │ {:<20} {:>7.1} ms", format!("tool:{}", name), duration.as_secs_f64() * 1000.0);
+                }
+                StepProfile::Shell { cmd, duration } => {
+                    let short = if cmd.len() > 25 { format!("{}…", &cmd[..24]) } else { cmd.clone() };
+                    eprintln!("  │ {:<20} {:>7.1} ms", format!("sh:{}", short), duration.as_secs_f64() * 1000.0);
+                }
+            }
+        }
+        eprintln!("  │ {:<20} {:>7.1} ms", "TOTAL", self.total.as_secs_f64() * 1000.0);
+        eprintln!("  └────────────────────────────────────────────┘");
+    }
+}
+
 /// Fulfill a task: ask the model to decide between running a command or answering, then do it.
-/// `cfg` carries the chosen model. `max_steps` limits how many command iterations the agent can run
+/// `max_steps` limits how many command iterations the agent can run
 /// before forced to answer. Returns the exit code (0 for an answered task). Prints the real command
 /// output, or the answer, to stdout.
 pub fn fulfill(
     task: &str,
-    cfg: &LlmConfig,
     mode: Mode,
     opts: &Options,
     max_steps: usize,
@@ -402,6 +469,8 @@ git); never PowerShell or cmd syntax."
     // Step loop: the model runs commands to gather info (each output fed back, capped), then
     // finishes with an ANALYZED answer — never a raw command dump. A failure is fed back to fix.
     let mut transcript_events: Vec<TranscriptEvent> = Vec::new();
+    let mut agent_profile = if agent_profiling() { Some(AgentProfile::default()) } else { None };
+    let agent_start = Instant::now();
     let mut seen: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new(); // (cmd, error) pairs
     let perms = crate::agent::permission::Permissions::default();
@@ -418,8 +487,20 @@ git); never PowerShell or cmd syntax."
             };
             format!("Request: {task}\n\nCommands run so far:\n{transcript}{fix_hint}\nGather more if needed, else answer.")
         };
-        match parse_decision(&one_call(cfg, &system, &user, mode, false)?) {
+        let (decision_text, infer_profile) = one_call(&system, &user, mode, false)?;
+        if let Some(ref mut ap) = agent_profile {
+            ap.steps.push(StepProfile::Inference {
+                label: format!("step-{} infer", step),
+                duration: infer_profile.as_ref().map_or(Duration::ZERO, |p| p.total),
+                profile: infer_profile,
+            });
+        }
+        match parse_decision(&decision_text) {
             Decision::Answer(text) => {
+                if let Some(ref mut ap) = agent_profile {
+                    ap.total = agent_start.elapsed();
+                    ap.print();
+                }
                 print_answer(&text, mode);
                 return Ok(0);
             }
@@ -478,49 +559,35 @@ git); never PowerShell or cmd syntax."
                                 continue;
                             }
                         }
-                        // Execute
-                        let ctx = ToolContext {
-                            workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                        };
-                        match (tool.execute)(&ctx, &args) {
-                            Ok(output) => {
-                                let truncated = limiter.truncate(&output);
-                                transcript_events.push(TranscriptEvent::ToolResult {
-                                    name: tool.name,
-                                    output: truncated,
-                                    error: false,
-                                });
-                            }
-                            Err(e) => {
-                                transcript_events.push(TranscriptEvent::ToolResult {
-                                    name: tool.name,
-                                    output: e,
-                                    error: true,
-                                });
-                            }
-                        }
+                        // Fall through to execute
                     }
-                    crate::agent::permission::Action::Allow => {
-                        let ctx = ToolContext {
-                            workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                        };
-                        match (tool.execute)(&ctx, &args) {
-                            Ok(output) => {
-                                let truncated = limiter.truncate(&output);
-                                transcript_events.push(TranscriptEvent::ToolResult {
-                                    name: tool.name,
-                                    output: truncated,
-                                    error: false,
-                                });
-                            }
-                            Err(e) => {
-                                transcript_events.push(TranscriptEvent::ToolResult {
-                                    name: tool.name,
-                                    output: e,
-                                    error: true,
-                                });
-                            }
-                        }
+                    crate::agent::permission::Action::Allow => {}
+                }
+                // Execute (Ask confirmed or Allow)
+                let ctx = ToolContext {
+                    workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                };
+                let t_tool = Instant::now();
+                let result = (tool.execute)(&ctx, &args);
+                let tool_elapsed = t_tool.elapsed();
+                if let Some(ref mut ap) = agent_profile {
+                    ap.steps.push(StepProfile::Tool { name: tool.name, duration: tool_elapsed });
+                }
+                match result {
+                    Ok(output) => {
+                        let truncated = limiter.truncate(&output);
+                        transcript_events.push(TranscriptEvent::ToolResult {
+                            name: tool.name,
+                            output: truncated,
+                            error: false,
+                        });
+                    }
+                    Err(e) => {
+                        transcript_events.push(TranscriptEvent::ToolResult {
+                            name: tool.name,
+                            output: e,
+                            error: true,
+                        });
                     }
                 }
             }
@@ -549,7 +616,12 @@ git); never PowerShell or cmd syntax."
                 } else {
                     let _ = writeln!(std::io::stderr(), "$ {cmd}"); // safe → show what runs
                 }
+                let t_shell = Instant::now();
                 let (code, out) = exec_capture(&cmd, opts, mode)?;
+                let shell_elapsed = t_shell.elapsed();
+                if let Some(ref mut ap) = agent_profile {
+                    ap.steps.push(StepProfile::Shell { cmd: cmd.clone(), duration: shell_elapsed });
+                }
                 if code != 0 {
                     failed.push((cmd.clone(), format!("exit {code}: {}", trunc(&out, 200))));
                 }
@@ -566,7 +638,19 @@ git); never PowerShell or cmd syntax."
     let user = format!(
         "Request: {task}\n\nCommands run so far:\n{transcript}\nGive your final answer now as {{\"answer\":\"...\"}}."
     );
-    if let Decision::Answer(text) = parse_decision(&one_call(cfg, &system, &user, mode, false)?) {
+    let (decision_text, infer_profile) = one_call(&system, &user, mode, false)?;
+    if let Some(ref mut ap) = agent_profile {
+        ap.steps.push(StepProfile::Inference {
+            label: "forced-answer".into(),
+            duration: infer_profile.as_ref().map_or(Duration::ZERO, |p| p.total),
+            profile: infer_profile,
+        });
+    }
+    if let Decision::Answer(text) = parse_decision(&decision_text) {
+        if let Some(ref mut ap) = agent_profile {
+            ap.total = agent_start.elapsed();
+            ap.print();
+        }
         print_answer(&text, mode);
     }
     Ok(0)
@@ -576,7 +660,6 @@ git); never PowerShell or cmd syntax."
 /// the result needs to go back as tool content, not to stdout/stderr.
 pub fn fulfill_and_capture(
     task: &str,
-    cfg: &LlmConfig,
     opts: &Options,
     max_steps: usize,
 ) -> Result<String, String> {
@@ -591,6 +674,8 @@ pub fn fulfill_and_capture(
     let system = build_system_prompt(shell);
 
     let mut transcript_events: Vec<TranscriptEvent> = Vec::new();
+    let mut agent_profile = if agent_profiling() { Some(AgentProfile::default()) } else { None };
+    let agent_start = Instant::now();
     let mut seen: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
     let _perms = crate::agent::permission::Permissions::default();
@@ -607,8 +692,20 @@ pub fn fulfill_and_capture(
             };
             format!("Request: {task}\n\nCommands run so far:\n{transcript}{fix_hint}\nGather more if needed, else answer.")
         };
-        match parse_decision(&one_call(cfg, &system, &user, Mode::Model, false)?) {
+        let (decision_text, infer_profile) = one_call(&system, &user, Mode::Model, false)?;
+        if let Some(ref mut ap) = agent_profile {
+            ap.steps.push(StepProfile::Inference {
+                label: format!("step-{} infer", step),
+                duration: infer_profile.as_ref().map_or(Duration::ZERO, |p| p.total),
+                profile: infer_profile,
+            });
+        }
+        match parse_decision(&decision_text) {
             Decision::Answer(text) => {
+                if let Some(ref mut ap) = agent_profile {
+                    ap.total = agent_start.elapsed();
+                    ap.print();
+                }
                 return Ok(text);
             }
             Decision::Tool { tool, args, say: _ } => {
@@ -641,7 +738,13 @@ pub fn fulfill_and_capture(
                 let ctx = ToolContext {
                     workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 };
-                match (tool.execute)(&ctx, &args) {
+                let t_tool = Instant::now();
+                let result = (tool.execute)(&ctx, &args);
+                let tool_elapsed = t_tool.elapsed();
+                if let Some(ref mut ap) = agent_profile {
+                    ap.steps.push(StepProfile::Tool { name: tool.name, duration: tool_elapsed });
+                }
+                match result {
                     Ok(output) => {
                         let truncated = limiter.truncate(&output);
                         transcript_events.push(TranscriptEvent::ToolResult {
@@ -672,7 +775,12 @@ pub fn fulfill_and_capture(
             }
             Decision::Run { cmd, .. } => {
                 seen.push(cmd.clone());
+                let t_shell = Instant::now();
                 let (code, out) = exec_capture(&cmd, opts, Mode::Model)?;
+                let shell_elapsed = t_shell.elapsed();
+                if let Some(ref mut ap) = agent_profile {
+                    ap.steps.push(StepProfile::Shell { cmd: cmd.clone(), duration: shell_elapsed });
+                }
                 if code != 0 {
                     failed.push((cmd.clone(), format!("exit {code}: {}", trunc(&out, 200))));
                 }
@@ -689,9 +797,19 @@ pub fn fulfill_and_capture(
     let user = format!(
         "Request: {task}\n\nCommands run so far:\n{transcript}\nGive your final answer now as {{\"answer\":\"...\"}}."
     );
-    if let Decision::Answer(text) =
-        parse_decision(&one_call(cfg, &system, &user, Mode::Model, false)?)
-    {
+    let (decision_text, infer_profile) = one_call(&system, &user, Mode::Model, false)?;
+    if let Some(ref mut ap) = agent_profile {
+        ap.steps.push(StepProfile::Inference {
+            label: "forced-answer".into(),
+            duration: infer_profile.as_ref().map_or(Duration::ZERO, |p| p.total),
+            profile: infer_profile,
+        });
+    }
+    if let Decision::Answer(text) = parse_decision(&decision_text) {
+        if let Some(ref mut ap) = agent_profile {
+            ap.total = agent_start.elapsed();
+            ap.print();
+        }
         return Ok(text);
     }
     Ok("No answer produced.".to_string())
@@ -715,12 +833,6 @@ const SAY_COLOR: &str = "\x1b[38;5;153m";
 
 // Max commands the model may run to gather info before it must give a final answer.
 pub const MAX_STEPS: usize = 6;
-
-/// Maximum number of retry attempts for transient LLM failures.
-const MAX_RETRIES: usize = 3;
-
-/// Initial backoff duration in milliseconds.
-const INITIAL_BACKOFF_MS: u64 = 500;
 
 /// Print an answer to stdout. User mode renders markdown to ANSI (headers, lists, syntax-highlighted
 /// code blocks) so it reads in a terminal instead of showing raw ``` fences; Model mode prints the
@@ -934,7 +1046,6 @@ fn exec_capture(cmd: &str, opts: &Options, mode: Mode) -> Result<(i32, String), 
         &Intent::from_command(run_line),
         &mut view,
         &mut std::io::sink(),
-        None,
         &exec,
     );
     let buf = view.finish();
@@ -1137,25 +1248,22 @@ fn trunc(s: &str, max: usize) -> String {
     }
 }
 
+/// Run one inference call through the local llama.cpp model.
+///
+/// In **User mode** the function shows a spinner while the model loads, then
+/// streams the answer text to stderr in real-time as tokens arrive.  C-level
+/// llama.cpp context-construction noise may appear briefly during setup, but
+/// cursor save/restore (`\x1b[s` / `\x1b[u\x1b[J`) erases everything after
+/// generation finishes.  The full JSON is returned so `parse_decision` +
+/// `print_answer` can render the final markdown-formatted answer on stdout.
+///
+/// In **Model mode** inference runs silently and the raw JSON is returned.
 fn one_call(
-    cfg: &LlmConfig,
     system: &str,
     user: &str,
     mode: Mode,
-    live: bool,
-) -> Result<String, String> {
-    let body = serde_json::json!({
-        "model": cfg.model,
-        "temperature": 0.2,
-        "stream": true,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    });
-    // Start the spinner BEFORE the request: a model can hold the connection for seconds (connecting +
-    // thinking server-side) before the first byte. With live=false it spins for the whole call, so
-    // the user always sees progress during the wait instead of a frozen prompt.
+    _live: bool,
+) -> Result<(String, Option<cotrex_ai_runtime::InferProfile>), String> {
     let phrases = [
         "cooking",
         "brewing",
@@ -1172,108 +1280,82 @@ fn one_call(
     let random_index = (nanos % phrases.len() as u128) as usize;
     let label = phrases[random_index];
 
-    let spinner = (mode == Mode::User).then(|| Spinner::start(label));
+    if mode == Mode::User {
+        // Save cursor via console_write (bypasses fd 2, works even while the
+        // worker thread has StderrSuppress active).
+        crate::llm::console_write(b"\x1b[s");
 
-    // Retry with exponential backoff for transient failures.
-    let mut last_err = String::new();
-    for attempt in 0..=MAX_RETRIES {
-        if attempt > 0 {
-            let backoff = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
-            if let Mode::User = mode {
-                let _ = writeln!(
-                    std::io::stderr(),
-                    "  (retry {attempt}/{MAX_RETRIES} after {backoff}ms)"
-                );
-            }
-            thread::sleep(Duration::from_millis(backoff));
-        }
-        match ureq::post(&cfg.url)
-            .set("Authorization", &format!("Bearer {}", cfg.key))
-            .set("Content-Type", "application/json")
-            .send_json(body.clone())
-        {
-            Ok(resp) => {
-                // Handle rate limiting (429) and server errors (5xx) as retryable.
-                let status = resp.status();
-                if status == 429 || (500..600).contains(&status) {
-                    last_err = format!("HTTP {status}");
-                    continue;
+        let mut spinner = Some(Spinner::start(label));
+        let (handle, rx) = crate::llm::infer_local_stream(system, user);
+
+        let mut buffer = String::new();
+        let mut displayed: usize = 0;
+
+        while let Ok(token) = rx.recv() {
+            // First token → stop the spinner.
+            drop(spinner.take());
+
+            buffer.push_str(&token);
+
+            // Incrementally extract the answer-text value from the growing
+            // JSON and stream it via console_write (bypasses fd 2 suppression).
+            if let Some(text) = extract_answer_value(&buffer) {
+                if text.len() > displayed {
+                    crate::llm::console_write(text[displayed..].as_bytes());
+                    displayed = text.len();
                 }
-                return stream(resp, live, spinner);
-            }
-            Err(ureq::Error::Status(status, _resp)) => {
-                // ureq wraps non-2xx responses as errors.
-                if status == 429 || (500..600).contains(&status) {
-                    last_err = format!("HTTP {status}");
-                    continue;
-                }
-                // Non-retryable client error (4xx except 429): fail immediately.
-                return Err(format!("request failed: HTTP {status}"));
-            }
-            Err(e) => {
-                // Network errors are retryable.
-                last_err = format!("{e}");
-                continue;
             }
         }
+
+        drop(spinner.take());
+
+        // Restore cursor + erase spinner, C noise, and streamed text.
+        crate::llm::console_write(b"\x1b[u\x1b[J");
+
+        let (full_text, profile) = handle.join().unwrap_or_else(|_| Err("inference thread panicked".into()))
+            ?;
+        Ok((full_text, profile))
+    } else {
+        // Model mode — silent, no output
+        crate::llm::infer_local_profiled(system, user)
     }
-    Err(format!(
-        "request failed after {MAX_RETRIES} retries: {last_err}"
-    ))
 }
 
-/// Read an OpenAI-compatible SSE stream and accumulate the answer `content`. When `live`, tokens
-/// stream to stderr as they arrive (`reasoning_content` then `content`) and stand the spinner down;
-/// otherwise the spinner covers the whole call and nothing is shown — used for the decision turns,
-/// whose raw `{"run":…}` JSON should never reach the user (the model's `say` narrates instead).
-/// `content` is always accumulated and returned. stdout is untouched.
-fn stream(
-    resp: ureq::Response,
-    live: bool,
-    mut spinner: Option<Spinner>,
-) -> Result<String, String> {
-    let mut err = std::io::stderr();
-    let reader = BufReader::new(resp.into_reader());
-    let mut content = String::new();
-    let mut shown = false; // streamed something to stderr (so we close its line at the end)
-    for line in reader.lines() {
-        let line = line.map_err(|e| format!("stream read: {e}"))?;
-        let data = match line.strip_prefix("data:") {
-            Some(d) => d.trim(),
-            None => continue,
-        };
-        if data == "[DONE]" {
-            break;
-        }
-        let v: serde_json::Value = match serde_json::from_str(data) {
-            Ok(v) => v,
-            Err(_) => continue, // keep-alive or partial line; skip
-        };
-        let delta = &v["choices"][0]["delta"];
-        let reasoning = delta["reasoning_content"].as_str().unwrap_or("");
-        if live && !reasoning.is_empty() {
-            spinner.take();
-            shown = true;
-            let _ = write!(err, "{reasoning}");
-            let _ = err.flush();
-        }
-        if let Some(t) = delta["content"].as_str() {
-            if !t.is_empty() {
-                if live {
-                    spinner.take(); // model is producing output — stand the spinner down
-                    shown = true;
-                    let _ = write!(err, "{t}");
-                    let _ = err.flush();
+/// Incrementally extract the *value* of the `"answer"` key from a partial JSON
+/// string.  Searches for `"answer":"` anywhere in the buffer (handles any key
+/// ordering, e.g. `{"say":"…","answer":"…"}`).  Returns `Some(text)` with the
+/// unescaped text seen so far, or `None` if the buffer does not yet contain an
+/// answer value.
+fn extract_answer_value(buf: &str) -> Option<String> {
+    // Find the answer key anywhere in the (possibly partial) JSON.
+    let key = r#""answer":""#;
+    let start = buf.find(key)? + key.len();
+    let value_part = &buf[start..];
+
+    // Walk the JSON string value, handling backslash escapes.
+    let mut result = String::new();
+    let mut chars = value_part.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => break,          // closing quote — value complete
+            '\\' => {
+                // Unescape the next character.
+                if let Some(esc) = chars.next() {
+                    result.push(match esc {
+                        'n'  => '\n',
+                        't'  => '\t',
+                        'r'  => '\r',
+                        '"'  => '"',
+                        '\\' => '\\',
+                        '/'  => '/',
+                        other => other,   // best-effort for \uXXXX etc.
+                    });
                 }
-                content.push_str(t);
             }
+            other => result.push(other),
         }
     }
-    spinner.take();
-    if shown {
-        let _ = writeln!(err);
-    }
-    Ok(content)
+    Some(result)
 }
 
 /// A tiny stderr spinner that animates until stopped. Shows a green checkmark on completion.
@@ -1455,7 +1537,7 @@ mod tests {
 
     #[test]
     fn default_role_exists() {
-        assert!(DEFAULT_ROLE.contains("Cotrex"));
+        assert!(COTREX_SYSTEM_PROMPT.contains("Cotrex"));
         assert!(decision_system().contains("JSON object"));
     }
 
@@ -1622,5 +1704,40 @@ mod tests {
         assert!(list.contains("edit"));
         assert!(list.contains("glob"));
         assert!(list.contains("grep"));
+    }
+
+    #[test]
+    fn extract_answer_value_partial() {
+        // No prefix yet
+        assert_eq!(extract_answer_value("{"), None);
+        // Prefix only
+        assert_eq!(extract_answer_value(r#"{"answer":""#), Some("".into()));
+        // Partial value
+        assert_eq!(
+            extract_answer_value(r#"{"answer":"hello"#),
+            Some("hello".into())
+        );
+        // Complete value
+        assert_eq!(
+            extract_answer_value(r#"{"answer":"hello"}"#),
+            Some("hello".into())
+        );
+        // Escaped characters
+        assert_eq!(
+            extract_answer_value(r#"{"answer":"line1\nline2"}"#),
+            Some("line1\nline2".into())
+        );
+        // Non-answer decision
+        assert_eq!(extract_answer_value(r#"{"run":"ls"}"#), None);
+        // Answer key NOT first (different key ordering)
+        assert_eq!(
+            extract_answer_value(r#"{"say":"thinking","answer":"A function"#),
+            Some("A function".into())
+        );
+        // Answer key NOT first, complete
+        assert_eq!(
+            extract_answer_value(r#"{"say":"done","answer":"hello"}"#),
+            Some("hello".into())
+        );
     }
 }

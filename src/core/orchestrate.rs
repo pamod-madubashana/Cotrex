@@ -11,7 +11,6 @@ use std::thread;
 
 use crate::core::intent::Intent;
 use crate::core::normalize::{normalize, LineEvent, Severity};
-use crate::llm::LlmConfig;
 
 /// Keep the last N output lines for the LLM. RTK already pre-filters, so this is a token guard.
 /// ponytail: last 200 lines; raise only if compression misses context past that window.
@@ -36,13 +35,15 @@ pub struct Options {
     pub raw: bool,
     /// rtk_verbosity=ultra-compact: pass `--ultra-compact` to rtk.
     pub ultra_compact: bool,
-    /// compression=llm: analyze with the model, but only when the command failed. A successful
-    /// `git status` already returns compact rtk output — sending it to the model would burn tokens
-    /// (and block on the network) for an insight that just says "no issues".
+    /// compression=llm: reserved (no-op; LLM compression removed).
+    #[allow(dead_code)]
     pub llm_on_failure: bool,
     /// Emit the `{"type":"result", …}` footer on the machine channel. Off for model-mode prompts
     /// where the caller wants the command's output and nothing else.
     pub footer: bool,
+    /// Suppress human-facing noise: command echo (`› rtk …`), JSON result footer, and summary
+    /// line (`‹ ok …`). On for direct CLI usage where the user just wants the command's output.
+    pub quiet: bool,
 }
 
 /// Run the intent through RTK. Writes normalized NDJSON events to `machine` (stdout) and a
@@ -51,7 +52,6 @@ pub fn run(
     intent: &Intent,
     machine: &mut impl Write,
     human: &mut impl Write,
-    llm: Option<&LlmConfig>,
     opts: &Options,
 ) -> Result<i32, String> {
     intent.validate()?;
@@ -72,7 +72,9 @@ pub fn run(
     }
 
     // PROCESS_START on the human channel only; machine channel is pure line/result events.
-    writeln!(human, "› rtk {}", args.join(" ")).ok();
+    if !opts.quiet {
+        writeln!(human, "› rtk {}", args.join(" ")).ok();
+    }
 
     let rtk = crate::config::install::ensure_rtk()?;
     let mut child = Command::new(&rtk)
@@ -138,7 +140,7 @@ pub fn run(
         .code()
         .unwrap_or(-1);
     let status = if code == 0 { "ok" } else { "failed" };
-    if opts.footer {
+    if opts.footer && !opts.quiet {
         let result = Result_ {
             kind: "result",
             status,
@@ -146,28 +148,8 @@ pub fn run(
         };
         writeln!(machine, "{}", serde_json::to_string(&result).unwrap()).ok();
     }
-    writeln!(human, "‹ {status} (exit {code}, {errors} error line(s))").ok();
-
-    // Optional LLM compression: best-effort. A failed call never fails the exec.
-    // `intent.llm` forces it on (explicit --llm); otherwise llm mode only analyzes failures.
-    let run_insight = intent.llm || (opts.llm_on_failure && (code != 0 || errors > 0));
-    if run_insight {
-        if let Some(cfg) = llm {
-            match crate::llm::compress(cfg, &intent.command, code, &raw.join("\n")) {
-                Ok(ins) => {
-                    let mut ev = serde_json::to_value(&ins).unwrap();
-                    ev["type"] = serde_json::json!("insight");
-                    writeln!(machine, "{ev}").ok();
-                    writeln!(human, "  ⟐ {}", ins.root_cause).ok();
-                    if !ins.suggested_fix.is_empty() {
-                        writeln!(human, "  → {}", ins.suggested_fix).ok();
-                    }
-                }
-                Err(e) => {
-                    writeln!(human, "  (llm skipped: {e})").ok();
-                }
-            }
-        }
+    if !opts.quiet {
+        writeln!(human, "‹ {status} (exit {code}, {errors} error line(s))").ok();
     }
     Ok(code)
 }

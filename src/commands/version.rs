@@ -5,18 +5,10 @@ pub fn run() {
     let installed = super::model::list_installed().unwrap_or_default();
     let registry = cotrex_ai_runtime::model_manager::registry::ModelRegistry::built_in();
 
-    let backend = if cfg!(feature = "local-model") {
-        "Local (llama.cpp)"
-    } else {
-        "Remote (API)"
-    };
-
     let features = {
         let mut f = Vec::new();
-        if cfg!(feature = "local-model") {
-            f.push("MCP");
-            f.push("Local Inference");
-        }
+        f.push("MCP");
+        f.push("Local Inference");
         f.push("Workspace Intelligence");
         f.push("Git Context");
         f.join(", ")
@@ -24,7 +16,7 @@ pub fn run() {
 
     println!("Cotrex {version}\n");
     println!("Runtime:  cotrex-ai");
-    println!("Backend:  {backend}");
+    println!("Backend:  Local (llama.cpp)");
     println!(
         "Models:   {} registered, {} installed",
         registry.models.len(),

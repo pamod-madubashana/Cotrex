@@ -1,7 +1,7 @@
 //! Persistent config + the interactive `cotrex setup` flow.
 //!
-//! The key lives in the user's config dir (e.g. %APPDATA%\cotrex\config.toml), set *after* install
-//! via `cotrex setup` — not a project `.env`. Env vars still override for power users / CI.
+//! The config lives in the user's config dir (e.g. %APPDATA%\cotrex\config.toml), set *after*
+//! install via `cotrex setup` — not a project `.env`. Env vars still override for power users / CI.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -9,11 +9,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
-    pub provider: String,
-    pub llm_url: String,
-    pub llm_key: String,
-    pub llm_model: String,
-    /// off | heuristic | llm — default compression for command output.
+    /// off | heuristic — default compression for command output.
     pub compression: String,
     /// normal | ultra-compact — rtk output verbosity.
     pub rtk_verbosity: String,
@@ -26,10 +22,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            provider: String::new(),
-            llm_url: String::new(),
-            llm_key: String::new(),
-            llm_model: String::new(),
             compression: "heuristic".into(),
             rtk_verbosity: "normal".into(),
             graph_auto: true,
@@ -48,15 +40,6 @@ pub fn load() -> Config {
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| toml::from_str::<Config>(&s).ok())
         .unwrap_or_default();
-    if let Ok(v) = std::env::var("COTREX_LLM_URL") {
-        cfg.llm_url = v;
-    }
-    if let Ok(v) = std::env::var("COTREX_LLM_KEY") {
-        cfg.llm_key = v;
-    }
-    if let Ok(v) = std::env::var("COTREX_LLM_MODEL") {
-        cfg.llm_model = v;
-    }
     if let Ok(v) = std::env::var("COTREX_COMPRESSION") {
         cfg.compression = v;
     }
@@ -81,21 +64,11 @@ pub fn save(cfg: &Config) -> Result<PathBuf, String> {
 
 /// Interactive setup. Pretty prompts via `inquire`; writes the config file.
 pub fn run_setup() -> Result<(), String> {
-    use inquire::{Password, PasswordDisplayMode, Select, Text};
-
-    let llm_key = Password::new("NVIDIA NIM API key")
-        .with_display_mode(PasswordDisplayMode::Masked)
-        .without_confirmation()
-        .prompt()
-        .map_err(|e| e.to_string())?;
+    use inquire::Select;
 
     let compression = Select::new(
         "Default compression",
-        vec![
-            "heuristic (rtk filter)",
-            "llm (rtk + AI insight)",
-            "off (raw output)",
-        ],
+        vec!["heuristic (rtk filter)", "off (raw output)"],
     )
     .prompt()
     .map_err(|e| e.to_string())?
@@ -138,7 +111,7 @@ pub fn run_setup() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
         match choice {
-            "custom (type your own)" => Text::new("Agent name")
+            "custom (type your own)" => inquire::Text::new("Agent name")
                 .prompt()
                 .map_err(|e| e.to_string())?
                 .trim()
@@ -151,10 +124,6 @@ pub fn run_setup() -> Result<(), String> {
     };
 
     let cfg = Config {
-        provider: "NVIDIA NIM".into(),
-        llm_url: "https://integrate.api.nvidia.com/v1/chat/completions".into(),
-        llm_key,
-        llm_model: "meta/llama-3.1-8b-instruct".into(),
         compression,
         rtk_verbosity,
         graph_auto,
@@ -172,11 +141,7 @@ mod tests {
     #[test]
     fn config_round_trips_through_toml() {
         let cfg = Config {
-            provider: "Groq".into(),
-            llm_url: "https://x/y".into(),
-            llm_key: "secret".into(),
-            llm_model: "m".into(),
-            compression: "llm".into(),
+            compression: "heuristic".into(),
             rtk_verbosity: "ultra-compact".into(),
             graph_auto: true,
             agent: "codex".into(),
@@ -190,6 +155,5 @@ mod tests {
     fn defaults_are_safe() {
         let c = Config::default();
         assert_eq!(c.compression, "heuristic");
-        assert!(c.llm_key.is_empty());
     }
 }

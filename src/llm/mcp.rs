@@ -18,7 +18,6 @@ use cotrex_ai_runtime::{OrchestrationRequest, Orchestrator};
 use crate::config::Config;
 use crate::core::intent::Intent;
 use crate::core::orchestrate::{self, Options};
-use crate::llm::LlmConfig;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -69,7 +68,6 @@ pub fn serve() -> ! {
 
 /// Run the MCP server with an orchestrator available.
 /// The orchestrator is lazily initialized on first tool call.
-#[cfg_attr(not(feature = "local-model"), allow(dead_code))]
 pub fn serve_with_ai(orchestrator: Arc<Orchestrator>) -> ! {
     ORCHESTRATOR.set(orchestrator).ok();
     serve()
@@ -346,20 +344,16 @@ fn tool_delegate(params: &Value, cfg: &Config) -> Value {
         .unwrap_or("assistant")
         .trim();
 
-    let llm_cfg = match LlmConfig::from_config(cfg) {
-        Some(c) => c,
-        None => return tool_error("LLM not configured — run `cotrex setup` first".into()),
-    };
-
     let opts = Options {
         raw: cfg.compression == "off",
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
-        llm_on_failure: cfg.compression == "llm",
+        llm_on_failure: false,
         footer: false,
+        quiet: false,
     };
     let max_steps = crate::agent::prompt::MAX_STEPS;
 
-    match crate::agent::prompt::fulfill_and_capture(&task, &llm_cfg, &opts, max_steps) {
+    match crate::agent::prompt::fulfill_and_capture(&task, &opts, max_steps) {
         Ok(answer) => json!({
             "content": [{"type": "text", "text": answer}],
             "isError": false,
@@ -381,20 +375,16 @@ fn tool_plan(params: &Value, cfg: &Config) -> Value {
         return tool_error("missing required argument 'task'".into());
     }
 
-    let llm_cfg = match LlmConfig::from_config(cfg) {
-        Some(c) => c,
-        None => return tool_error("LLM not configured — run `cotrex setup` first".into()),
-    };
-
     let opts = Options {
         raw: cfg.compression == "off",
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
-        llm_on_failure: cfg.compression == "llm",
+        llm_on_failure: false,
         footer: false,
+        quiet: false,
     };
     let max_steps = crate::agent::prompt::MAX_STEPS;
 
-    match crate::agent::prompt::fulfill_and_capture(&task, &llm_cfg, &opts, max_steps) {
+    match crate::agent::prompt::fulfill_and_capture(&task, &opts, max_steps) {
         Ok(answer) => json!({
             "content": [{"type": "text", "text": answer}],
             "isError": false,
@@ -415,27 +405,20 @@ fn tool_run(params: &Value, cfg: &Config) -> Value {
     if command.is_empty() {
         return tool_error("missing required argument 'command'".into());
     }
-    let llm_requested = args.get("llm").and_then(Value::as_bool).unwrap_or(false);
-
     let mut intent = Intent::from_command(command);
-    intent.llm = llm_requested; // explicit force; llm mode only analyzes failures (below)
+    intent.llm = false;
     let opts = Options {
         raw: cfg.compression == "off",
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
-        llm_on_failure: cfg.compression == "llm",
+        llm_on_failure: false,
         footer: true,
-    };
-    // Best-effort LLM: if requested but unconfigured, just run without the insight.
-    let llm_cfg = if intent.llm || opts.llm_on_failure {
-        LlmConfig::from_config(cfg)
-    } else {
-        None
+        quiet: false,
     };
 
     // Capture the machine channel; discard the human summary. stdout stays the protocol channel.
     let mut machine: Vec<u8> = Vec::new();
     let mut human = io::sink();
-    match orchestrate::run(&intent, &mut machine, &mut human, llm_cfg.as_ref(), &opts) {
+    match orchestrate::run(&intent, &mut machine, &mut human, &opts) {
         Ok(code) => {
             if cfg.graph_auto {
                 crate::graphify::auto_update(&intent.command);
