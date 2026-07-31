@@ -20,10 +20,13 @@ impl LocalInference {
         }
     }
 
+    /// Load the model if not already loaded. Suppresses C stderr during loading.
     fn ensure_loaded(&mut self) -> Result<(), String> {
         if self.model.is_some() {
             return Ok(());
         }
+
+        let _guard = StderrSuppress::new();
 
         let registry = cotrex_ai_runtime::model_manager::load_registry()
             .map_err(|e| format!("failed to load registry: {e}"))?;
@@ -66,6 +69,43 @@ impl LocalInference {
 
         Ok(response.text)
     }
+}
+
+/// RAII guard that suppresses C-level stderr (fd 2). Used to hide llama.cpp loading logs.
+struct StderrSuppress {
+    saved_fd: i32,
+}
+
+impl StderrSuppress {
+    fn new() -> Self {
+        unsafe {
+            let saved_fd = _dup(2);
+            let nul_fd = _open(b"NUL\0".as_ptr() as *const i8, 0x0002);
+            if nul_fd >= 0 {
+                _dup2(nul_fd, 2);
+                _close(nul_fd);
+            }
+            Self { saved_fd }
+        }
+    }
+}
+
+impl Drop for StderrSuppress {
+    fn drop(&mut self) {
+        unsafe {
+            if self.saved_fd >= 0 {
+                _dup2(self.saved_fd, 2);
+                _close(self.saved_fd);
+            }
+        }
+    }
+}
+
+extern "C" {
+    fn _dup(fd: i32) -> i32;
+    fn _dup2(src_fd: i32, dst_fd: i32) -> i32;
+    fn _open(filename: *const i8, flags: i32, ...) -> i32;
+    fn _close(fd: i32) -> i32;
 }
 
 /// Global local inference instance (lazily initialized).
