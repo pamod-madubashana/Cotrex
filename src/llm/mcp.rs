@@ -815,11 +815,10 @@ mod tests {
         };
 
         let tmp = tempfile::tempdir().unwrap();
-        let kernel =
-            cotrex::kernel::WorkspaceKernel::open(tmp.path().to_path_buf()).unwrap();
-        let context_source = Arc::new(
-            cotrex::kernel::context_source::KernelContextSource::new(Arc::new(kernel)),
-        );
+        let kernel = cotrex::kernel::WorkspaceKernel::open(tmp.path().to_path_buf()).unwrap();
+        let context_source = Arc::new(cotrex::kernel::context_source::KernelContextSource::new(
+            Arc::new(kernel),
+        ));
 
         Orchestrator::new(
             Arc::new(MockProvider),
