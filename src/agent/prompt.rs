@@ -1237,6 +1237,10 @@ fn one_call(
     #[cfg(feature = "local-model")]
     {
         let spinner = (mode == Mode::User).then(|| Spinner::start("thinking"));
+        // Ensure spinner renders at least one frame before blocking inference
+        if spinner.is_some() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let result = crate::llm::infer_local(system, user);
         if let Some(s) = spinner {
             s.complete();
