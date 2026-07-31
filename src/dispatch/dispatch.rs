@@ -506,7 +506,17 @@ pub fn dispatch_one(arg: &str, mode: agent::prompt::Mode) {
     }
 }
 
-pub fn load_llm_or_exit(cfg: &config::Config) -> llm::LlmConfig {
+pub fn load_llm_or_exit(_cfg: &config::Config) -> llm::LlmConfig {
+    // Local model doesn't need URL/key — return a dummy config
+    #[cfg(feature = "local-model")]
+    {
+        llm::LlmConfig {
+            url: String::new(),
+            key: String::new(),
+            model: "local".into(),
+        }
+    }
+    #[cfg(not(feature = "local-model"))]
     match llm::LlmConfig::from_config(cfg) {
         Some(c) => c,
         None => {

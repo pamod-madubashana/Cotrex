@@ -1142,88 +1142,28 @@ fn trunc(s: &str, max: usize) -> String {
 }
 
 fn one_call(
-    cfg: &LlmConfig,
+    _cfg: &LlmConfig,
     system: &str,
     user: &str,
     mode: Mode,
-    live: bool,
+    _live: bool,
 ) -> Result<String, String> {
-    let body = serde_json::json!({
-        "model": cfg.model,
-        "temperature": 0.2,
-        "stream": true,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    });
-    // Start the spinner BEFORE the request: a model can hold the connection for seconds (connecting +
-    // thinking server-side) before the first byte. With live=false it spins for the whole call, so
-    // the user always sees progress during the wait instead of a frozen prompt.
-    let phrases = [
-        "cooking",
-        "brewing",
-        "pondering",
-        "crunching",
-        "consulting the oracle",
-        "sparking neurons",
-        "weaving words",
-    ];
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let random_index = (nanos % phrases.len() as u128) as usize;
-    let label = phrases[random_index];
-
-    let spinner = (mode == Mode::User).then(|| Spinner::start(label));
-
-    // Retry with exponential backoff for transient failures.
-    let mut last_err = String::new();
-    for attempt in 0..=MAX_RETRIES {
-        if attempt > 0 {
-            let backoff = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
-            if let Mode::User = mode {
-                let _ = writeln!(
-                    std::io::stderr(),
-                    "  (retry {attempt}/{MAX_RETRIES} after {backoff}ms)"
-                );
-            }
-            thread::sleep(Duration::from_millis(backoff));
+    // Local model inference — no remote API needed
+    #[cfg(feature = "local-model")]
+    {
+        let spinner = (mode == Mode::User).then(|| Spinner::start("thinking"));
+        let result = crate::llm::infer_local(system, user);
+        if let Some(s) = spinner {
+            s.complete();
         }
-        match ureq::post(&cfg.url)
-            .set("Authorization", &format!("Bearer {}", cfg.key))
-            .set("Content-Type", "application/json")
-            .send_json(body.clone())
-        {
-            Ok(resp) => {
-                // Handle rate limiting (429) and server errors (5xx) as retryable.
-                let status = resp.status();
-                if status == 429 || (500..600).contains(&status) {
-                    last_err = format!("HTTP {status}");
-                    continue;
-                }
-                return stream(resp, live, spinner);
-            }
-            Err(ureq::Error::Status(status, _resp)) => {
-                // ureq wraps non-2xx responses as errors.
-                if status == 429 || (500..600).contains(&status) {
-                    last_err = format!("HTTP {status}");
-                    continue;
-                }
-                // Non-retryable client error (4xx except 429): fail immediately.
-                return Err(format!("request failed: HTTP {status}"));
-            }
-            Err(e) => {
-                // Network errors are retryable.
-                last_err = format!("{e}");
-                continue;
-            }
-        }
+        result
     }
-    Err(format!(
-        "request failed after {MAX_RETRIES} retries: {last_err}"
-    ))
+
+    #[cfg(not(feature = "local-model"))]
+    {
+        let _ = (system, user, mode);
+        Err("local-model feature not enabled".into())
+    }
 }
 
 /// Read an OpenAI-compatible SSE stream and accumulate the answer `content`. When `live`, tokens
