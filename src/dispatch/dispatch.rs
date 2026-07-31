@@ -129,10 +129,10 @@ pub fn dispatch_cmd(cmd: Cmd) -> Option<Intent> {
                 let context_source: Arc<dyn cotrex_ai_runtime::ContextSource> =
                     match std::env::current_dir()
                         .ok()
-                        .and_then(|cwd| crate::kernel::WorkspaceKernel::open(cwd).ok())
+                        .and_then(|cwd| cotrex::kernel::WorkspaceKernel::open(cwd).ok())
                     {
                         Some(kernel) => {
-                            Arc::new(crate::kernel::context_source::KernelContextSource::new(
+                            Arc::new(cotrex::kernel::context_source::KernelContextSource::new(
                                 Arc::new(kernel),
                             ))
                         }
