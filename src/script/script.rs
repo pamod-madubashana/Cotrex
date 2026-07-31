@@ -80,6 +80,7 @@ pub fn run(
         ultra_compact: false,
         llm_on_failure: false,
         footer: true,
+        quiet: true,
     };
     orchestrate::run(
         &Intent::from_command("git diff --stat"),

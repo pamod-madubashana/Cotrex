@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::agent::tool::{self, OutputLimiter, ToolContext, BUILTINS};
 use crate::core::intent::Intent;
@@ -370,6 +370,78 @@ pub fn parse_json(s: &str) -> Result<Vec<(String, String)>, String> {
     Ok(pairs)
 }
 
+/// Whether `COTREX_PROFILE` is enabled.
+fn agent_profiling() -> bool {
+    std::env::var("COTREX_PROFILE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Step-by-step profile of an entire agent execution.
+/// Each inference call, tool call, and shell command is recorded with its
+/// wall-clock duration so you can see exactly where time goes.
+#[derive(Debug, Default)]
+struct AgentProfile {
+    steps: Vec<StepProfile>,
+    total: Duration,
+}
+
+/// One step in an agent execution.
+#[derive(Debug)]
+enum StepProfile {
+    Inference {
+        label: String,
+        duration: Duration,
+        profile: Option<cotrex_ai_runtime::InferProfile>,
+    },
+    Tool {
+        name: &'static str,
+        duration: Duration,
+    },
+    Shell {
+        cmd: String,
+        duration: Duration,
+    },
+}
+
+impl AgentProfile {
+    fn print(&self) {
+        eprintln!("  ┌─ Agent Profile ─────────────────────────────┐");
+        for step in &self.steps {
+            match step {
+                StepProfile::Inference { label, duration, profile } => {
+                    eprintln!("  │ {:<20} {:>7.1} ms", label, duration.as_secs_f64() * 1000.0);
+                    if let Some(p) = profile {
+                        eprintln!("  │   ├─ chat_template  {:>5.1} ms",
+                            p.chat_template.as_secs_f64() * 1000.0);
+                        eprintln!("  │   ├─ tokenize       {:>5.1} ms",
+                            p.tokenize.as_secs_f64() * 1000.0);
+                        eprintln!("  │   ├─ new_context    {:>5.1} ms",
+                            p.new_context.as_secs_f64() * 1000.0);
+                        eprintln!("  │   ├─ prompt_decode  {:>5.1} ms ({} tok, {:.0} tok/s)",
+                            p.prompt_decode.as_secs_f64() * 1000.0,
+                            p.prompt_tokens,
+                            p.prompt_tok_s());
+                        eprintln!("  │   └─ generation    {:>5.1} ms ({} tok, {:.1} tok/s)",
+                            p.generation.as_secs_f64() * 1000.0,
+                            p.generated_tokens,
+                            p.gen_tok_s());
+                    }
+                }
+                StepProfile::Tool { name, duration } => {
+                    eprintln!("  │ {:<20} {:>7.1} ms", format!("tool:{}", name), duration.as_secs_f64() * 1000.0);
+                }
+                StepProfile::Shell { cmd, duration } => {
+                    let short = if cmd.len() > 25 { format!("{}…", &cmd[..24]) } else { cmd.clone() };
+                    eprintln!("  │ {:<20} {:>7.1} ms", format!("sh:{}", short), duration.as_secs_f64() * 1000.0);
+                }
+            }
+        }
+        eprintln!("  │ {:<20} {:>7.1} ms", "TOTAL", self.total.as_secs_f64() * 1000.0);
+        eprintln!("  └────────────────────────────────────────────┘");
+    }
+}
+
 /// Fulfill a task: ask the model to decide between running a command or answering, then do it.
 /// `max_steps` limits how many command iterations the agent can run
 /// before forced to answer. Returns the exit code (0 for an answered task). Prints the real command
@@ -397,6 +469,8 @@ git); never PowerShell or cmd syntax."
     // Step loop: the model runs commands to gather info (each output fed back, capped), then
     // finishes with an ANALYZED answer — never a raw command dump. A failure is fed back to fix.
     let mut transcript_events: Vec<TranscriptEvent> = Vec::new();
+    let mut agent_profile = if agent_profiling() { Some(AgentProfile::default()) } else { None };
+    let agent_start = Instant::now();
     let mut seen: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new(); // (cmd, error) pairs
     let perms = crate::agent::permission::Permissions::default();
@@ -413,8 +487,20 @@ git); never PowerShell or cmd syntax."
             };
             format!("Request: {task}\n\nCommands run so far:\n{transcript}{fix_hint}\nGather more if needed, else answer.")
         };
-        match parse_decision(&one_call(&system, &user, mode, false)?) {
+        let (decision_text, infer_profile) = one_call(&system, &user, mode, false)?;
+        if let Some(ref mut ap) = agent_profile {
+            ap.steps.push(StepProfile::Inference {
+                label: format!("step-{} infer", step),
+                duration: infer_profile.as_ref().map_or(Duration::ZERO, |p| p.total),
+                profile: infer_profile,
+            });
+        }
+        match parse_decision(&decision_text) {
             Decision::Answer(text) => {
+                if let Some(ref mut ap) = agent_profile {
+                    ap.total = agent_start.elapsed();
+                    ap.print();
+                }
                 print_answer(&text, mode);
                 return Ok(0);
             }
@@ -473,49 +559,35 @@ git); never PowerShell or cmd syntax."
                                 continue;
                             }
                         }
-                        // Execute
-                        let ctx = ToolContext {
-                            workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                        };
-                        match (tool.execute)(&ctx, &args) {
-                            Ok(output) => {
-                                let truncated = limiter.truncate(&output);
-                                transcript_events.push(TranscriptEvent::ToolResult {
-                                    name: tool.name,
-                                    output: truncated,
-                                    error: false,
-                                });
-                            }
-                            Err(e) => {
-                                transcript_events.push(TranscriptEvent::ToolResult {
-                                    name: tool.name,
-                                    output: e,
-                                    error: true,
-                                });
-                            }
-                        }
+                        // Fall through to execute
                     }
-                    crate::agent::permission::Action::Allow => {
-                        let ctx = ToolContext {
-                            workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                        };
-                        match (tool.execute)(&ctx, &args) {
-                            Ok(output) => {
-                                let truncated = limiter.truncate(&output);
-                                transcript_events.push(TranscriptEvent::ToolResult {
-                                    name: tool.name,
-                                    output: truncated,
-                                    error: false,
-                                });
-                            }
-                            Err(e) => {
-                                transcript_events.push(TranscriptEvent::ToolResult {
-                                    name: tool.name,
-                                    output: e,
-                                    error: true,
-                                });
-                            }
-                        }
+                    crate::agent::permission::Action::Allow => {}
+                }
+                // Execute (Ask confirmed or Allow)
+                let ctx = ToolContext {
+                    workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                };
+                let t_tool = Instant::now();
+                let result = (tool.execute)(&ctx, &args);
+                let tool_elapsed = t_tool.elapsed();
+                if let Some(ref mut ap) = agent_profile {
+                    ap.steps.push(StepProfile::Tool { name: tool.name, duration: tool_elapsed });
+                }
+                match result {
+                    Ok(output) => {
+                        let truncated = limiter.truncate(&output);
+                        transcript_events.push(TranscriptEvent::ToolResult {
+                            name: tool.name,
+                            output: truncated,
+                            error: false,
+                        });
+                    }
+                    Err(e) => {
+                        transcript_events.push(TranscriptEvent::ToolResult {
+                            name: tool.name,
+                            output: e,
+                            error: true,
+                        });
                     }
                 }
             }
@@ -544,7 +616,12 @@ git); never PowerShell or cmd syntax."
                 } else {
                     let _ = writeln!(std::io::stderr(), "$ {cmd}"); // safe → show what runs
                 }
+                let t_shell = Instant::now();
                 let (code, out) = exec_capture(&cmd, opts, mode)?;
+                let shell_elapsed = t_shell.elapsed();
+                if let Some(ref mut ap) = agent_profile {
+                    ap.steps.push(StepProfile::Shell { cmd: cmd.clone(), duration: shell_elapsed });
+                }
                 if code != 0 {
                     failed.push((cmd.clone(), format!("exit {code}: {}", trunc(&out, 200))));
                 }
@@ -561,7 +638,19 @@ git); never PowerShell or cmd syntax."
     let user = format!(
         "Request: {task}\n\nCommands run so far:\n{transcript}\nGive your final answer now as {{\"answer\":\"...\"}}."
     );
-    if let Decision::Answer(text) = parse_decision(&one_call(&system, &user, mode, false)?) {
+    let (decision_text, infer_profile) = one_call(&system, &user, mode, false)?;
+    if let Some(ref mut ap) = agent_profile {
+        ap.steps.push(StepProfile::Inference {
+            label: "forced-answer".into(),
+            duration: infer_profile.as_ref().map_or(Duration::ZERO, |p| p.total),
+            profile: infer_profile,
+        });
+    }
+    if let Decision::Answer(text) = parse_decision(&decision_text) {
+        if let Some(ref mut ap) = agent_profile {
+            ap.total = agent_start.elapsed();
+            ap.print();
+        }
         print_answer(&text, mode);
     }
     Ok(0)
@@ -585,6 +674,8 @@ pub fn fulfill_and_capture(
     let system = build_system_prompt(shell);
 
     let mut transcript_events: Vec<TranscriptEvent> = Vec::new();
+    let mut agent_profile = if agent_profiling() { Some(AgentProfile::default()) } else { None };
+    let agent_start = Instant::now();
     let mut seen: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
     let _perms = crate::agent::permission::Permissions::default();
@@ -601,8 +692,20 @@ pub fn fulfill_and_capture(
             };
             format!("Request: {task}\n\nCommands run so far:\n{transcript}{fix_hint}\nGather more if needed, else answer.")
         };
-        match parse_decision(&one_call(&system, &user, Mode::Model, false)?) {
+        let (decision_text, infer_profile) = one_call(&system, &user, Mode::Model, false)?;
+        if let Some(ref mut ap) = agent_profile {
+            ap.steps.push(StepProfile::Inference {
+                label: format!("step-{} infer", step),
+                duration: infer_profile.as_ref().map_or(Duration::ZERO, |p| p.total),
+                profile: infer_profile,
+            });
+        }
+        match parse_decision(&decision_text) {
             Decision::Answer(text) => {
+                if let Some(ref mut ap) = agent_profile {
+                    ap.total = agent_start.elapsed();
+                    ap.print();
+                }
                 return Ok(text);
             }
             Decision::Tool { tool, args, say: _ } => {
@@ -635,7 +738,13 @@ pub fn fulfill_and_capture(
                 let ctx = ToolContext {
                     workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 };
-                match (tool.execute)(&ctx, &args) {
+                let t_tool = Instant::now();
+                let result = (tool.execute)(&ctx, &args);
+                let tool_elapsed = t_tool.elapsed();
+                if let Some(ref mut ap) = agent_profile {
+                    ap.steps.push(StepProfile::Tool { name: tool.name, duration: tool_elapsed });
+                }
+                match result {
                     Ok(output) => {
                         let truncated = limiter.truncate(&output);
                         transcript_events.push(TranscriptEvent::ToolResult {
@@ -666,7 +775,12 @@ pub fn fulfill_and_capture(
             }
             Decision::Run { cmd, .. } => {
                 seen.push(cmd.clone());
+                let t_shell = Instant::now();
                 let (code, out) = exec_capture(&cmd, opts, Mode::Model)?;
+                let shell_elapsed = t_shell.elapsed();
+                if let Some(ref mut ap) = agent_profile {
+                    ap.steps.push(StepProfile::Shell { cmd: cmd.clone(), duration: shell_elapsed });
+                }
                 if code != 0 {
                     failed.push((cmd.clone(), format!("exit {code}: {}", trunc(&out, 200))));
                 }
@@ -683,9 +797,19 @@ pub fn fulfill_and_capture(
     let user = format!(
         "Request: {task}\n\nCommands run so far:\n{transcript}\nGive your final answer now as {{\"answer\":\"...\"}}."
     );
-    if let Decision::Answer(text) =
-        parse_decision(&one_call(&system, &user, Mode::Model, false)?)
-    {
+    let (decision_text, infer_profile) = one_call(&system, &user, Mode::Model, false)?;
+    if let Some(ref mut ap) = agent_profile {
+        ap.steps.push(StepProfile::Inference {
+            label: "forced-answer".into(),
+            duration: infer_profile.as_ref().map_or(Duration::ZERO, |p| p.total),
+            profile: infer_profile,
+        });
+    }
+    if let Decision::Answer(text) = parse_decision(&decision_text) {
+        if let Some(ref mut ap) = agent_profile {
+            ap.total = agent_start.elapsed();
+            ap.print();
+        }
         return Ok(text);
     }
     Ok("No answer produced.".to_string())
@@ -1139,7 +1263,7 @@ fn one_call(
     user: &str,
     mode: Mode,
     _live: bool,
-) -> Result<String, String> {
+) -> Result<(String, Option<cotrex_ai_runtime::InferProfile>), String> {
     let phrases = [
         "cooking",
         "brewing",
@@ -1188,11 +1312,12 @@ fn one_call(
         // Restore cursor + erase spinner, C noise, and streamed text.
         crate::llm::console_write(b"\x1b[u\x1b[J");
 
-        handle.join().unwrap_or_else(|_| Err("inference thread panicked".into()))
-            .and_then(|_| Ok(buffer))
+        let (full_text, profile) = handle.join().unwrap_or_else(|_| Err("inference thread panicked".into()))
+            ?;
+        Ok((full_text, profile))
     } else {
         // Model mode — silent, no output
-        crate::llm::infer_local(system, user)
+        crate::llm::infer_local_profiled(system, user)
     }
 }
 

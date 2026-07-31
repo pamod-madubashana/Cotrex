@@ -155,6 +155,7 @@ fn llama_e2e_build_summary_through_orchestrator() {
     let parsed =
         cotrex_ai_runtime::DefaultOutputParser.parse(&cotrex_ai_runtime::InferenceResponse {
             text: response.text().to_string(),
+            profile: None,
         });
     assert!(
         !parsed.raw.is_empty(),
@@ -232,6 +233,7 @@ fn llama_e2e_response_structure_validation() {
     // Validate that output parser produces a ModelOutput
     let inference_resp = cotrex_ai_runtime::InferenceResponse {
         text: response.raw_output.clone(),
+        profile: None,
     };
     let model_output = cotrex_ai_runtime::DefaultOutputParser.parse(&inference_resp);
     assert!(
@@ -378,6 +380,7 @@ fn llama_e2e_capability_routing_build_summary() {
     // Verify the response is a BuildSummary (via raw_output parsing)
     let inference_resp = cotrex_ai_runtime::InferenceResponse {
         text: response.raw_output.clone(),
+        profile: None,
     };
     let model_output = cotrex_ai_runtime::DefaultOutputParser.parse(&inference_resp);
     let cap_request = build_summary_request();
@@ -408,6 +411,7 @@ fn llama_e2e_capability_routing_explain_rust() {
     // Verify the response is routed through ExplainRust
     let inference_resp = cotrex_ai_runtime::InferenceResponse {
         text: response.raw_output.clone(),
+        profile: None,
     };
     let model_output = cotrex_ai_runtime::DefaultOutputParser.parse(&inference_resp);
     let cap_request = explain_rust_request();

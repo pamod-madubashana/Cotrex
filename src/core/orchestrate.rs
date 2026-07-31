@@ -41,6 +41,9 @@ pub struct Options {
     /// Emit the `{"type":"result", …}` footer on the machine channel. Off for model-mode prompts
     /// where the caller wants the command's output and nothing else.
     pub footer: bool,
+    /// Suppress human-facing noise: command echo (`› rtk …`), JSON result footer, and summary
+    /// line (`‹ ok …`). On for direct CLI usage where the user just wants the command's output.
+    pub quiet: bool,
 }
 
 /// Run the intent through RTK. Writes normalized NDJSON events to `machine` (stdout) and a
@@ -69,7 +72,9 @@ pub fn run(
     }
 
     // PROCESS_START on the human channel only; machine channel is pure line/result events.
-    writeln!(human, "› rtk {}", args.join(" ")).ok();
+    if !opts.quiet {
+        writeln!(human, "› rtk {}", args.join(" ")).ok();
+    }
 
     let rtk = crate::config::install::ensure_rtk()?;
     let mut child = Command::new(&rtk)
@@ -135,7 +140,7 @@ pub fn run(
         .code()
         .unwrap_or(-1);
     let status = if code == 0 { "ok" } else { "failed" };
-    if opts.footer {
+    if opts.footer && !opts.quiet {
         let result = Result_ {
             kind: "result",
             status,
@@ -143,6 +148,8 @@ pub fn run(
         };
         writeln!(machine, "{}", serde_json::to_string(&result).unwrap()).ok();
     }
-    writeln!(human, "‹ {status} (exit {code}, {errors} error line(s))").ok();
+    if !opts.quiet {
+        writeln!(human, "‹ {status} (exit {code}, {errors} error line(s))").ok();
+    }
     Ok(code)
 }

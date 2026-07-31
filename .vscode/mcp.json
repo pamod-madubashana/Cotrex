@@ -1,0 +1,10 @@
+{
+	"inputs": [],
+	"servers": {
+			"cotrex": {
+				"type": "stdio",
+				"command": "cotrex",
+				"args": ["mcp"]
+			}
+		}
+}

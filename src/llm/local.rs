@@ -3,7 +3,7 @@
 //! Wraps the llama.cpp provider to provide a simple `generate(system, prompt)` interface
 //! for the prompt system. No remote API needed.
 
-use cotrex_ai_runtime::{ChatMessage, LocalModel, ResolvedConfig};
+use cotrex_ai_runtime::{ChatMessage, InferProfile, LocalModel, ResolvedConfig};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -19,9 +19,18 @@ impl Default for LocalBackend {
 
 impl LocalBackend {
     pub fn generate(&self, system: &str, prompt: &str) -> Result<String, String> {
+        self.generate_profiled(system, prompt).map(|(text, _)| text)
+    }
+
+    /// Like `generate` but also returns the inference profile.
+    pub fn generate_profiled(
+        &self,
+        system: &str,
+        prompt: &str,
+    ) -> Result<(String, Option<InferProfile>), String> {
         let inf = LOCAL_INFERENCE.get_or_init(|| Mutex::new(LocalInference::new()));
         let mut guard = inf.lock().map_err(|e| format!("lock: {e}"))?;
-        guard.infer_with_system(system, prompt)
+        guard.infer_with_system_profiled(system, prompt)
     }
 
     /// Streaming inference: runs on a worker thread, emits tokens via the
@@ -32,7 +41,7 @@ impl LocalBackend {
         system: String,
         prompt: String,
         tx: Sender<String>,
-    ) -> thread::JoinHandle<Result<String, String>> {
+    ) -> thread::JoinHandle<Result<(String, Option<InferProfile>), String>> {
         thread::spawn(move || {
             let inf = LOCAL_INFERENCE.get_or_init(|| Mutex::new(LocalInference::new()));
             let mut guard = inf.lock().map_err(|e| format!("lock: {e}"))?;
@@ -94,7 +103,18 @@ impl LocalInference {
 
     /// Infer with structured chat messages (system + user).
     /// The provider applies the GGUF's chat template (e.g. ChatML) before tokenization.
+    #[allow(dead_code)]
     pub fn infer_messages(&mut self, messages: Vec<ChatMessage>) -> Result<String, String> {
+        self.infer_messages_profiled(messages).map(|(text, _)| text)
+    }
+
+    /// Like `infer_messages` but also returns the inference profile when
+    /// `COTREX_PROFILE=1` is set.  Callers that need per-phase timings use
+    /// this; everyone else uses `infer_messages`.
+    pub fn infer_messages_profiled(
+        &mut self,
+        messages: Vec<ChatMessage>,
+    ) -> Result<(String, Option<InferProfile>), String> {
         self.ensure_loaded()?;
 
         let model = self.model.as_ref().unwrap();
@@ -112,13 +132,24 @@ impl LocalInference {
             .map_err(|e| format!("inference failed: {e}"))?;
         drop(_guard);
 
-        Ok(response.text)
+        Ok((response.text, response.profile))
     }
 
     /// Infer with a system prompt plus a user prompt.
+    #[allow(dead_code)]
     pub fn infer_with_system(&mut self, system: &str, prompt: &str) -> Result<String, String> {
         let messages = vec![ChatMessage::system(system), ChatMessage::user(prompt)];
         self.infer_messages(messages)
+    }
+
+    /// Like `infer_with_system` but also returns the inference profile.
+    pub fn infer_with_system_profiled(
+        &mut self,
+        system: &str,
+        prompt: &str,
+    ) -> Result<(String, Option<InferProfile>), String> {
+        let messages = vec![ChatMessage::system(system), ChatMessage::user(prompt)];
+        self.infer_messages_profiled(messages)
     }
 
     /// Streaming variant: attaches a token callback to the inference request
@@ -128,7 +159,7 @@ impl LocalInference {
         system: &str,
         prompt: &str,
         token_callback: Option<Arc<Mutex<dyn FnMut(&str) + Send + 'static>>>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<InferProfile>), String> {
         let messages = vec![ChatMessage::system(system), ChatMessage::user(prompt)];
         self.infer_messages_stream(messages, token_callback)
     }
@@ -142,7 +173,7 @@ impl LocalInference {
         &mut self,
         messages: Vec<ChatMessage>,
         token_callback: Option<Arc<Mutex<dyn FnMut(&str) + Send + 'static>>>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<InferProfile>), String> {
         self.ensure_loaded()?;
 
         let model = self.model.as_ref().unwrap();
@@ -160,7 +191,7 @@ impl LocalInference {
             .map_err(|e| format!("inference failed: {e}"))?;
         drop(_guard);
 
-        Ok(response.text)
+        Ok((response.text, response.profile))
     }
 }
 
@@ -219,13 +250,22 @@ pub fn infer_local(system: &str, user: &str) -> Result<String, String> {
     backend.generate(system, user)
 }
 
+/// Like `infer_local` but also returns the inference profile.
+pub fn infer_local_profiled(
+    system: &str,
+    user: &str,
+) -> Result<(String, Option<InferProfile>), String> {
+    let backend = LocalBackend::default();
+    backend.generate_profiled(system, user)
+}
+
 /// Streaming inference: spawns a worker thread, returns `(JoinHandle, Receiver)`.
 /// The receiver yields tokens as they are generated.
 pub fn infer_local_stream(
     system: &str,
     user: &str,
 ) -> (
-    thread::JoinHandle<Result<String, String>>,
+    thread::JoinHandle<Result<(String, Option<InferProfile>), String>>,
     std::sync::mpsc::Receiver<String>,
 ) {
     let (tx, rx) = std::sync::mpsc::channel();

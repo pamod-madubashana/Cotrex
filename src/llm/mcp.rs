@@ -349,6 +349,7 @@ fn tool_delegate(params: &Value, cfg: &Config) -> Value {
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
         llm_on_failure: false,
         footer: false,
+        quiet: false,
     };
     let max_steps = crate::agent::prompt::MAX_STEPS;
 
@@ -379,6 +380,7 @@ fn tool_plan(params: &Value, cfg: &Config) -> Value {
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
         llm_on_failure: false,
         footer: false,
+        quiet: false,
     };
     let max_steps = crate::agent::prompt::MAX_STEPS;
 
@@ -410,6 +412,7 @@ fn tool_run(params: &Value, cfg: &Config) -> Value {
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
         llm_on_failure: false,
         footer: true,
+        quiet: false,
     };
 
     // Capture the machine channel; discard the human summary. stdout stays the protocol channel.

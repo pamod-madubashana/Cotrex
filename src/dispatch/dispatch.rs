@@ -34,9 +34,17 @@ pub fn run() {
         }
         if is_passthrough(first) {
             if rest.len() >= 2 {
+                // Multiple bare args → command (e.g. `cotrex git status`).
                 run_intent(Intent::from_command(rest.join(" ")));
-            } else {
+            } else if model_mode {
+                // -m flag present → single word is a prompt (e.g. cotrex -m "hi").
                 dispatch_one(&rest[0], mode);
+            } else if let Some(suggestion) = suggest_subcommand(first) {
+                eprintln!("cotrex: unknown command '{first}'. Did you mean '{suggestion}'?");
+                exit(2);
+            } else {
+                eprintln!("cotrex: '{first}' is not a command. Use quotes for a prompt: cotrex -m \"{first}\"");
+                exit(2);
             }
             return;
         }
@@ -64,6 +72,50 @@ pub fn run() {
 
 fn is_passthrough(first: &str) -> bool {
     !first.starts_with('-') && !SUBCOMMANDS.contains(&first)
+}
+
+/// Check if a bare argument looks like a misspelled subcommand (edit distance ≤ 2).
+/// Returns the closest subcommand name, or `None` if nothing is close enough.
+fn suggest_subcommand(input: &str) -> Option<&'static str> {
+    let mut best: Option<(&'static str, usize)> = None;
+    for &sub in SUBCOMMANDS {
+        let d = edit_distance(input, sub);
+        if d <= 1 {
+            match best {
+                Some((_, bd)) if d < bd => best = Some((sub, d)),
+                None => best = Some((sub, d)),
+                _ => {}
+            }
+        }
+    }
+    best.map(|(name, _)| name)
+}
+
+/// Optimal string alignment distance — like Levenshtein but counts adjacent transpositions as
+/// a single edit.  This catches typos like "mpc" → "mcp" (distance 1, not 2).
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let (m, n) = (a.len(), b.len());
+    // Full matrix needed for transposition look-back.
+    let mut d = vec![vec![0usize; n + 1]; m + 1];
+    for i in 0..=m {
+        d[i][0] = i;
+    }
+    for j in 0..=n {
+        d[0][j] = j;
+    }
+    for i in 1..=m {
+        for j in 1..=n {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + cost);
+            }
+        }
+    }
+    d[m][n]
 }
 
 /// Dispatch a parsed CLI subcommand. Returns the intent for commands that fall through to
@@ -100,6 +152,7 @@ pub fn dispatch_cmd(cmd: Cmd) -> Option<Intent> {
                 ultra_compact: cfg.rtk_verbosity == "ultra-compact",
                 llm_on_failure: false,
                 footer: true,
+                quiet: true,
             };
             let mut out = io::stdout();
             let mut err = io::stderr();
@@ -352,6 +405,7 @@ pub fn run_intent(intent: Intent) {
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
         llm_on_failure: false,
         footer: !model_mode,
+        quiet: true,
     };
 
     if model_mode {
@@ -490,6 +544,7 @@ pub fn exec_opts(cfg: &config::Config) -> orchestrate::Options {
         ultra_compact: cfg.rtk_verbosity == "ultra-compact",
         llm_on_failure: false,
         footer: true,
+        quiet: true,
     }
 }
 
@@ -552,5 +607,21 @@ mod tests {
         assert!(!is_passthrough("setup"));
         assert!(!is_passthrough("--help"));
         assert!(!is_passthrough("-V"));
+    }
+
+    #[test]
+    fn suggest_catches_typos() {
+        assert_eq!(suggest_subcommand("mpc"), Some("mcp"));    // transposition
+        assert_eq!(suggest_subcommand("mc"), Some("mcp"));     // deletion
+        assert_eq!(suggest_subcommand("rn"), Some("run"));     // deletion
+        assert_eq!(suggest_subcommand("setu"), Some("setup")); // deletion
+    }
+
+    #[test]
+    fn suggest_ignores_unrelated_words() {
+        assert_eq!(suggest_subcommand("git"), None);
+        assert_eq!(suggest_subcommand("cargo"), None);
+        assert_eq!(suggest_subcommand("hello"), None);
+        assert_eq!(suggest_subcommand("hi"), None);
     }
 }
