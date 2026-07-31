@@ -170,6 +170,11 @@ pub enum ModelAction {
         /// Model ID (e.g. qwen2.5-0.5b) or 'latest'.
         model_id: Option<String>,
     },
+    /// Run model qualification tests.
+    Test {
+        /// Model ID (e.g. qwen2.5-0.5b) or 'latest'.
+        model_id: String,
+    },
 }
 
 pub const SUBCOMMANDS: &[&str] = &[

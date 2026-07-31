@@ -315,26 +315,20 @@ fn tool_set_agent(params: &Value) -> Value {
     })
 }
 
-/// `list_roles`: return all available roles with their models and capabilities.
+/// `list_roles`: return the single available assistant role.
 fn tool_list_roles() -> Value {
-    let roles = crate::agent::prompt::roles_list();
-    let items: Vec<Value> = roles
-        .iter()
-        .map(|(name, model, desc)| {
-            json!({
-                "name": name,
-                "model": model,
-                "description": desc,
-            })
-        })
-        .collect();
+    let role = json!({
+        "name": "assistant",
+        "model": "local",
+        "description": "Single local execution assistant"
+    });
     json!({
-        "content": [{"type": "text", "text": serde_json::to_string_pretty(&items).unwrap_or_default()}],
+        "content": [{"type": "text", "text": serde_json::to_string_pretty(&vec![role]).unwrap_or_default()}],
         "isError": false,
     })
 }
 
-/// `delegate`: invoke a role with a task and return the answer.
+/// `delegate`: invoke the single assistant with a task and return the answer.
 fn tool_delegate(params: &Value, cfg: &Config) -> Value {
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     let task = args
@@ -346,18 +340,14 @@ fn tool_delegate(params: &Value, cfg: &Config) -> Value {
     if task.is_empty() {
         return tool_error("missing required argument 'task'".into());
     }
-    let role_name = args
+    let _role_name = args
         .get("role")
         .and_then(Value::as_str)
         .unwrap_or("assistant")
         .trim();
 
-    let Some((model, header, _mode, max_steps)) = crate::agent::prompt::role(role_name) else {
-        return tool_error(format!("unknown role: {role_name}"));
-    };
-
     let llm_cfg = match LlmConfig::from_config(cfg) {
-        Some(c) => crate::agent::prompt::with_model(&c, model),
+        Some(c) => c,
         None => return tool_error("LLM not configured — run `cotrex setup` first".into()),
     };
 
@@ -367,9 +357,9 @@ fn tool_delegate(params: &Value, cfg: &Config) -> Value {
         llm_on_failure: cfg.compression == "llm",
         footer: false,
     };
+    let max_steps = crate::agent::prompt::MAX_STEPS;
 
-    match crate::agent::prompt::fulfill_and_capture(&task, &llm_cfg, Some(header), &opts, max_steps)
-    {
+    match crate::agent::prompt::fulfill_and_capture(&task, &llm_cfg, &opts, max_steps) {
         Ok(answer) => json!({
             "content": [{"type": "text", "text": answer}],
             "isError": false,
@@ -391,12 +381,8 @@ fn tool_plan(params: &Value, cfg: &Config) -> Value {
         return tool_error("missing required argument 'task'".into());
     }
 
-    let Some((model, header, _mode, max_steps)) = crate::agent::prompt::role("planner") else {
-        return tool_error("planner role not found".into());
-    };
-
     let llm_cfg = match LlmConfig::from_config(cfg) {
-        Some(c) => crate::agent::prompt::with_model(&c, model),
+        Some(c) => c,
         None => return tool_error("LLM not configured — run `cotrex setup` first".into()),
     };
 
@@ -406,9 +392,9 @@ fn tool_plan(params: &Value, cfg: &Config) -> Value {
         llm_on_failure: cfg.compression == "llm",
         footer: false,
     };
+    let max_steps = crate::agent::prompt::MAX_STEPS;
 
-    match crate::agent::prompt::fulfill_and_capture(&task, &llm_cfg, Some(header), &opts, max_steps)
-    {
+    match crate::agent::prompt::fulfill_and_capture(&task, &llm_cfg, &opts, max_steps) {
         Ok(answer) => json!({
             "content": [{"type": "text", "text": answer}],
             "isError": false,
