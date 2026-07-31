@@ -814,6 +814,8 @@ const INITIAL_BACKOFF_MS: u64 = 500;
 /// code blocks) so it reads in a terminal instead of showing raw ``` fences; Model mode prints the
 /// raw text, since an agent wants plain markdown, not escape codes.
 fn print_answer(text: &str, mode: Mode) {
+    use std::io::Write;
+    let mut stdout = std::io::stdout();
     match mode {
         Mode::User => {
             let opts = markdown_to_ansi::Options {
@@ -822,10 +824,13 @@ fn print_answer(text: &str, mode: Mode) {
                 width: std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()),
                 code_bg: true,
             };
-            println!("{}", markdown_to_ansi::render(text, &opts));
+            let _ = writeln!(stdout, "{}", markdown_to_ansi::render(text, &opts));
         }
-        Mode::Model => println!("{text}"),
+        Mode::Model => {
+            let _ = writeln!(stdout, "{text}");
+        }
     }
+    let _ = stdout.flush();
 }
 
 #[derive(Debug)]

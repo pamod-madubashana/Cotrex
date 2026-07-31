@@ -61,6 +61,20 @@ pub fn resolve_model(id: &str) -> Result<(String, String, u64), String> {
     Ok((model.filename.clone(), model.url.clone(), model.size))
 }
 
+/// Verify a GGUF file at the given path. Returns true if valid.
+fn verify_gguf(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut magic = [0u8; 4];
+    if file.read_exact(&mut magic).is_err() {
+        return false;
+    }
+    &magic == b"GGUF"
+}
+
 /// Download a model with progress bar and verify checksum.
 pub fn download_model(
     id: &str,
@@ -85,9 +99,29 @@ pub fn download_model(
         std::fs::remove_file(&dest).map_err(|e| e.to_string())?;
     }
 
-    // Clean up stale .part file
+    // Check if .part file is a complete, valid GGUF
     if part.exists() {
-        std::fs::remove_file(&part).map_err(|e| e.to_string())?;
+        let part_meta = std::fs::metadata(&part).map_err(|e| e.to_string())?;
+        let part_size = part_meta.len();
+        let is_valid_gguf = verify_gguf(&part);
+
+        if is_valid_gguf && (expected_size == 0 || part_size == expected_size) {
+            // .part file is complete — just rename it
+            eprintln!("  {id} download found, finalizing...");
+            rename_part_to_dest(&part, &dest)?;
+            eprintln!("  Done. {id} installed.");
+            return Ok(());
+        }
+
+        if is_valid_gguf && part_size > 0 {
+            // Valid GGUF but incomplete — report and re-download
+            eprintln!("  Partial download found ({}/{}), re-downloading...",
+                format_size(part_size), format_size(expected_size));
+        } else {
+            // Invalid file — delete and re-download
+            eprintln!("  Incomplete or corrupted download, re-downloading...");
+            std::fs::remove_file(&part).ok();
+        }
     }
 
     eprintln!("  Downloading {id}...");
@@ -102,26 +136,23 @@ pub fn download_model(
         return Err(format!("HTTP {status}"));
     }
 
-    let total = if expected_size > 0 {
-        expected_size
-    } else {
-        response
-            .header("content-length")
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(0)
-    };
+    // Use content-length from response as the true total
+    let total = response
+        .header("content-length")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(expected_size);
 
     use std::io::{Read, Write};
 
     let mut reader = response.into_reader();
     let mut file = std::fs::File::create(&part).map_err(|e| e.to_string())?;
-    let mut buf = [0u8; 8192];
+    let mut buf = [0u8; 65536];
     let mut downloaded: u64 = 0;
 
     let pb = indicatif::ProgressBar::new(total);
     pb.set_style(
         indicatif::ProgressStyle::default_bar()
-            .template("  {spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+            .template("  {spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) ({eta})")
             .expect("valid template")
             .progress_chars("=> "),
     );
@@ -141,73 +172,65 @@ pub fn download_model(
     file.flush().map_err(|e| e.to_string())?;
     drop(file);
 
-    // Diagnostics
-    eprintln!("  verify path: {}", part.display());
-    let meta = std::fs::metadata(&part).map_err(|e| e.to_string())?;
-    eprintln!("  exists: true");
-    eprintln!("  size: {}", meta.len());
-
     // Verify GGUF magic
-    eprintln!("  Verifying GGUF...");
-    {
-        use std::io::Read;
-        let mut file = std::fs::File::open(&part).map_err(|e| {
-            let msg = format!("open for verify failed: {}: {}", part.display(), e);
-            eprintln!("  {msg}");
-            msg
-        })?;
-        let mut magic = [0u8; 4];
-        file.read_exact(&mut magic).map_err(|e| {
-            let msg = format!("read magic failed: {}: {}", part.display(), e);
-            eprintln!("  {msg}");
-            msg
-        })?;
-        if &magic != b"GGUF" {
-            let msg = format!("not a valid GGUF file: expected GGUF, got {:?}", &magic);
-            eprintln!("  {msg}");
-            std::fs::remove_file(&part).ok();
-            return Err(msg);
-        }
-        eprintln!("  GGUF magic: OK");
-    }
-
-    // Verify file size
-    if expected_size > 0 && meta.len() != expected_size {
-        let msg = format!(
-            "size mismatch: expected {} bytes, got {}",
-            expected_size,
-            meta.len()
-        );
-        eprintln!("  {msg}");
+    if !verify_gguf(&part) {
+        let msg = format!("not a valid GGUF file");
         std::fs::remove_file(&part).ok();
         return Err(msg);
     }
-    eprintln!("  size: OK");
+
+    // Verify file size (tolerant: accept if GGUF is valid)
+    let meta = std::fs::metadata(&part).map_err(|e| e.to_string())?;
+    if expected_size > 0 && meta.len() != expected_size {
+        eprintln!("  Warning: size mismatch (expected {}, got {}) but GGUF is valid, installing anyway.",
+            format_size(expected_size), format_size(meta.len()));
+    }
 
     // Rename part to final path
-    eprintln!("  Installing...");
-    eprintln!("  rename source: {}", part.display());
-    eprintln!("  rename destination: {}", dest.display());
-    match std::fs::rename(&part, &dest) {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            eprintln!("  destination exists, removing stale file...");
-            std::fs::remove_file(&dest).map_err(|e| e.to_string())?;
-            std::fs::rename(&part, &dest).map_err(|e| {
-                let msg = format!("rename retry failed: {}", e);
-                eprintln!("  {msg}");
-                msg
-            })?;
-        }
-        Err(e) => {
-            let msg = format!("rename failed: {}: {}", part.display(), e);
-            eprintln!("  {msg}");
-            return Err(msg);
-        }
-    }
+    rename_part_to_dest(&part, &dest)?;
 
     eprintln!("  Done. {id} installed.");
     Ok(())
+}
+
+/// Rename .part file to final destination, handling conflicts.
+fn rename_part_to_dest(part: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    match std::fs::rename(part, dest) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::remove_file(dest).map_err(|e| e.to_string())?;
+            std::fs::rename(part, dest).map_err(|e| format!("rename retry failed: {e}"))
+        }
+        Err(e) => Err(format!("rename failed: {e}")),
+    }
+}
+
+/// Interactive model selector — shows models and lets user pick with arrow keys.
+fn interactive_select_model() -> Result<String, String> {
+    let registry = cotrex_ai_runtime::model_manager::registry::ModelRegistry::built_in();
+    let installed = list_installed().unwrap_or_default();
+
+    let models: Vec<_> = registry.models.iter().collect();
+    if models.is_empty() {
+        return Err("no models available".into());
+    }
+
+    let options: Vec<String> = models
+        .iter()
+        .map(|m| {
+            let is_installed = installed.iter().any(|i| i == &m.id);
+            let status = if is_installed { " [installed]" } else { "" };
+            format!("{} — {}{}", m.id, format_size(m.size), status)
+        })
+        .collect();
+
+    let selection = inquire::Select::new("Select a model to install:", options)
+        .prompt()
+        .map_err(|e| format!("{e}"))?;
+
+    // Parse the model ID from the selection (before the " — " separator)
+    let model_id = selection.split(" — ").next().unwrap_or(&selection).trim().to_string();
+    Ok(model_id)
 }
 
 /// Format bytes as human-readable size.
@@ -231,10 +254,21 @@ pub fn format_size(bytes: u64) -> String {
 pub fn run(action: &ModelAction) {
     match action {
         ModelAction::Install { model_id } => {
-            let id = model_id.as_deref().unwrap_or("latest");
-            match resolve_model(id) {
+            let id = if let Some(id) = model_id.as_deref() {
+                id.to_string()
+            } else {
+                // No model specified — interactive selector
+                match interactive_select_model() {
+                    Ok(id) => id,
+                    Err(e) => {
+                        eprintln!("cotrex: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            };
+            match resolve_model(&id) {
                 Ok((filename, url, size)) => {
-                    if let Err(e) = download_model(id, &filename, &url, size) {
+                    if let Err(e) = download_model(&id, &filename, &url, size) {
                         eprintln!("cotrex: {e}");
                         std::process::exit(1);
                     }
@@ -257,7 +291,7 @@ pub fn run(action: &ModelAction) {
             println!("Available models:\n");
             for m in &registry.models {
                 let is_installed = installed.iter().any(|i| i == &m.id);
-                let marker = if is_installed { "✓" } else { " " };
+                let marker = if is_installed { "\u{2713}" } else { " " };
                 let size_str = format_size(m.size);
                 println!("  [{marker}] {:<20} {}", m.id, size_str);
             }
@@ -266,7 +300,7 @@ pub fn run(action: &ModelAction) {
                 println!("\nInstalled:");
                 for name in &installed {
                     let size = model_size(&format!("{name}.gguf"));
-                    println!("  ✓ {} ({})", name, format_size(size));
+                    println!("  \u{2713} {} ({})", name, format_size(size));
                 }
             }
         }
@@ -303,7 +337,7 @@ pub fn run(action: &ModelAction) {
                     println!("  File:       {filename}");
                     println!("  Size:       {}", format_size(size));
                     if is_installed {
-                        println!("  Status:     ✓ installed");
+                        println!("  Status:     \u{2713} installed");
                         if actual_size > 0 {
                             println!("  Disk usage: {}", format_size(actual_size));
                         }
@@ -377,7 +411,7 @@ fn run_model_test(model_id: &str) {
         let reason = test
             .reason
             .as_ref()
-            .map(|r| format!(" — {r}"))
+            .map(|r| format!(" \u{2014} {r}"))
             .unwrap_or_default();
         println!("[{status}] {}{}", test.name, reason);
     }
@@ -411,7 +445,7 @@ fn print_qualification_summary(result: &crate::agent::qualify::QualificationResu
         let reason = test
             .reason
             .as_ref()
-            .map(|r| format!(" — {r}"))
+            .map(|r| format!(" \u{2014} {r}"))
             .unwrap_or_default();
         println!("[{status}] {}{}", test.name, reason);
     }
