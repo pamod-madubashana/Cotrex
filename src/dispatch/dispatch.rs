@@ -30,8 +30,8 @@ pub fn run() {
     };
 
     if let Some(first) = rest.first() {
-        if agent::prompt::role(first).is_some() {
-            run_role(first, rest[1..].join(" ").trim(), mode);
+        if first == "assistant" {
+            run_assistant(rest[1..].join(" ").trim(), mode);
         }
         if is_passthrough(first) {
             if rest.len() >= 2 {
@@ -42,7 +42,7 @@ pub fn run() {
             return;
         }
         if model_mode {
-            eprintln!("cotrex: -m takes a prompt or role, not '{first}'");
+            eprintln!("cotrex: -m takes a prompt, not '{first}'");
             exit(2);
         }
     } else if model_mode {
@@ -476,7 +476,7 @@ pub fn run_intent(intent: Intent) {
 /// answers), or a `category: text` / JSON structured prompt.
 pub fn dispatch_one(arg: &str, mode: agent::prompt::Mode) {
     match agent::prompt::classify(arg) {
-        agent::prompt::Dispatch::Prompt(task) => run_role("assistant", &task, mode),
+        agent::prompt::Dispatch::Prompt(task) => run_assistant(&task, mode),
         agent::prompt::Dispatch::Json(s) => match agent::prompt::parse_json(&s) {
             Ok(pairs) => run_prompt(pairs, mode),
             Err(e) => {
@@ -535,39 +535,25 @@ pub fn exec_opts(cfg: &config::Config) -> orchestrate::Options {
     }
 }
 
-/// Role: offload a task to a role-specific model. The model decides whether to run a command (real
-/// output) or answer; the role just picks which model and biases it with the role's persona.
-pub fn run_role(role: &str, task: &str, mode: agent::prompt::Mode) -> ! {
+/// Run a task through the single assistant execution flow.
+pub fn run_assistant(task: &str, mode: agent::prompt::Mode) -> ! {
     if task.is_empty() {
-        eprintln!("cotrex: role '{role}' needs a task, e.g. cotrex {role} \"...\"");
+        eprintln!("cotrex: assistant needs a task, e.g. cotrex \"...\"");
         exit(2);
     }
-    let (model, header, _role_mode, max_steps) = agent::prompt::role(role).unwrap_or_else(|| {
-        eprintln!("cotrex: unknown role '{role}'");
-        exit(2);
-    });
-    fulfill(task, model, Some(header), mode, max_steps);
+    fulfill(task, mode);
 }
 
-/// Shared task fulfilment: pick the endpoint/key from config, swap in `model`, and let `prompt`
-/// decide run-vs-answer.
-fn fulfill(
-    task: &str,
-    model: &str,
-    role_header: Option<&str>,
-    mode: agent::prompt::Mode,
-    max_steps: usize,
-) -> ! {
+/// Shared task fulfilment: pick the endpoint/key from config and let the prompt decide run-vs-answer.
+fn fulfill(task: &str, mode: agent::prompt::Mode) -> ! {
     let cfg = config::load();
     let base = load_llm_or_exit(&cfg);
-    let model_cfg = agent::prompt::with_model(&base, model);
     match agent::prompt::fulfill(
         task,
-        &model_cfg,
-        role_header,
+        &base,
         mode,
         &exec_opts(&cfg),
-        max_steps,
+        agent::prompt::MAX_STEPS,
     ) {
         Ok(code) => exit(code),
         Err(e) => {
@@ -591,14 +577,7 @@ fn run_prompt(pairs: Vec<(String, String)>, mode: agent::prompt::Mode) -> ! {
                 exit(2);
             }
         };
-        if let Err(e) = agent::prompt::fulfill(
-            text,
-            &base,
-            Some(header),
-            mode,
-            &opts,
-            agent::prompt::MAX_STEPS,
-        ) {
+        if let Err(e) = agent::prompt::fulfill(text, &base, mode, &opts, agent::prompt::MAX_STEPS) {
             eprintln!("cotrex: {e}");
             exit(1);
         }

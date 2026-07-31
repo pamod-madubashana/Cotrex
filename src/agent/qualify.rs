@@ -164,7 +164,9 @@ fn qualification_tests() -> Vec<QualTest> {
                         .and_then(|v| v.as_str())
                         .ok_or("missing 'pattern' argument")?;
                     if !pattern.contains("*.rs") {
-                        return Err(format!("expected pattern containing '*.rs', got '{pattern}'"));
+                        return Err(format!(
+                            "expected pattern containing '*.rs', got '{pattern}'"
+                        ));
                     }
                     Ok(())
                 }
@@ -188,7 +190,9 @@ fn qualification_tests() -> Vec<QualTest> {
                             || a.to_lowercase().contains("hi!")
                             || a.to_lowercase().contains("hello")
                         {
-                            Err(format!("model returned greeting instead of using tools: {a}"))
+                            Err(format!(
+                                "model returned greeting instead of using tools: {a}"
+                            ))
                         } else {
                             // Model answered directly — might be OK if it's a real answer
                             Ok(())
@@ -237,10 +241,7 @@ pub fn run_qualification(model_id: &str) -> QualificationResult {
     } else {
         CapabilityStatus::Failed
     };
-    capabilities.insert(
-        multi_test.capability.clone(),
-        multi_status,
-    );
+    capabilities.insert(multi_test.capability.clone(), multi_status);
     tests.push(multi_result);
 
     QualificationResult {
@@ -446,7 +447,9 @@ fn run_multi_step_test(test: &QualTest, model_id: &str) -> TestResult {
     TestResult {
         name: test.name.clone(),
         passed: false,
-        reason: Some(format!("model did not produce a final answer within {max_steps} steps")),
+        reason: Some(format!(
+            "model did not produce a final answer within {max_steps} steps"
+        )),
         transcript,
     }
 }
@@ -457,6 +460,6 @@ fn chrono_free_timestamp() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-    .as_secs();
+        .as_secs();
     format!("{secs}")
 }

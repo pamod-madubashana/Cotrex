@@ -1,11 +1,27 @@
 //! Local model inference adapter.
 //!
-//! Wraps the llama.cpp provider to provide a simple `infer(prompt) -> response` interface
+//! Wraps the llama.cpp provider to provide a simple `generate(system, prompt)` interface
 //! for the prompt system. No remote API needed.
 
 use cotrex_ai_runtime::{ChatMessage, LocalModel, ResolvedConfig};
-use serde_json::json;
 use std::sync::{Mutex, OnceLock};
+
+/// Local model backend used by Cotrex prompt execution.
+pub struct LocalBackend;
+
+impl Default for LocalBackend {
+    fn default() -> Self {
+        Self
+    }
+}
+
+impl LocalBackend {
+    pub fn generate(&self, system: &str, prompt: &str) -> Result<String, String> {
+        let inf = LOCAL_INFERENCE.get_or_init(|| Mutex::new(LocalInference::new()));
+        let mut guard = inf.lock().map_err(|e| format!("lock: {e}"))?;
+        guard.infer_with_system(system, prompt)
+    }
+}
 
 /// Local model inference using llama.cpp.
 pub struct LocalInference {
@@ -54,17 +70,13 @@ impl LocalInference {
     /// Infer with structured chat messages (system + user).
     /// The provider applies the GGUF's chat template (e.g. ChatML) before tokenization.
     pub fn infer_messages(&mut self, messages: Vec<ChatMessage>) -> Result<String, String> {
-        if let Ok(response) = infer_ollama_messages(&messages) {
-            return Ok(response);
-        }
-
         self.ensure_loaded()?;
 
         let model = self.model.as_ref().unwrap();
         let request = cotrex_ai_runtime::InferenceRequest {
             prompt: cotrex_ai_runtime::Prompt::new(""),
             messages,
-            temperature: 0.7,
+            temperature: 0.0,
             max_tokens: 512,
         };
 
@@ -77,97 +89,11 @@ impl LocalInference {
         Ok(response.text)
     }
 
-    /// Infer with raw prompt text (fallback, no chat template applied).
-    #[allow(dead_code)]
-    pub fn infer(&mut self, prompt: &str) -> Result<String, String> {
-        if let Ok(response) = infer_ollama_prompt(prompt) {
-            return Ok(response);
-        }
-
-        self.ensure_loaded()?;
-
-        let model = self.model.as_ref().unwrap();
-        let request = cotrex_ai_runtime::InferenceRequest {
-            prompt: cotrex_ai_runtime::Prompt::new(prompt),
-            messages: vec![],
-            temperature: 0.7,
-            max_tokens: 512,
-        };
-
-        let _guard = StderrSuppress::new();
-        let response = model
-            .infer(request)
-            .map_err(|e| format!("inference failed: {e}"))?;
-        drop(_guard);
-
-        Ok(response.text)
+    /// Infer with a system prompt plus a user prompt.
+    pub fn infer_with_system(&mut self, system: &str, prompt: &str) -> Result<String, String> {
+        let messages = vec![ChatMessage::system(system), ChatMessage::user(prompt)];
+        self.infer_messages(messages)
     }
-}
-
-fn ollama_url(path: &str) -> String {
-    let base = std::env::var("COTREX_OLLAMA_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:11434".into())
-        .trim_end_matches('/')
-        .to_string();
-    format!("{base}{path}")
-}
-
-fn ollama_model() -> String {
-    std::env::var("COTREX_OLLAMA_MODEL").unwrap_or_else(|_| "cotrex-eval".into())
-}
-
-fn infer_ollama_messages(messages: &[ChatMessage]) -> Result<String, String> {
-    let messages: Vec<_> = messages
-        .iter()
-        .map(|m| json!({ "role": m.role.as_str(), "content": m.content.as_str() }))
-        .collect();
-
-    let body = json!({
-        "model": ollama_model(),
-        "messages": messages,
-        "stream": false,
-        "options": {
-            "temperature": 0.0
-        }
-    });
-
-    let response: serde_json::Value = ureq::post(&ollama_url("/api/chat"))
-        .send_json(body)
-        .map_err(|e| format!("ollama chat failed: {e}"))?
-        .into_json()
-        .map_err(|e| format!("ollama chat response: {e}"))?;
-
-    response
-        .get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "ollama chat response did not contain message.content".into())
-}
-
-fn infer_ollama_prompt(prompt: &str) -> Result<String, String> {
-    let body = json!({
-        "model": ollama_model(),
-        "prompt": prompt,
-        "stream": false,
-        "options": {
-            "temperature": 0.0
-        }
-    });
-
-    let response: serde_json::Value = ureq::post(&ollama_url("/api/generate"))
-        .send_json(body)
-        .map_err(|e| format!("ollama generate failed: {e}"))?
-        .into_json()
-        .map_err(|e| format!("ollama generate response: {e}"))?;
-
-    response
-        .get("response")
-        .and_then(|c| c.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "ollama generate response did not contain response text".into())
 }
 
 /// RAII guard that suppresses C-level stderr (fd 2).
@@ -212,16 +138,13 @@ static LOCAL_INFERENCE: OnceLock<Mutex<LocalInference>> = OnceLock::new();
 
 #[allow(dead_code)]
 pub fn local_infer(prompt: &str) -> Result<String, String> {
-    let inf = LOCAL_INFERENCE.get_or_init(|| Mutex::new(LocalInference::new()));
-    let mut guard = inf.lock().map_err(|e| format!("lock: {e}"))?;
-    guard.infer(prompt)
+    let backend = LocalBackend::default();
+    backend.generate("", prompt)
 }
 
 /// Infer with structured system + user messages.
 /// The provider applies the GGUF's chat template before tokenization.
 pub fn infer_local(system: &str, user: &str) -> Result<String, String> {
-    let inf = LOCAL_INFERENCE.get_or_init(|| Mutex::new(LocalInference::new()));
-    let mut guard = inf.lock().map_err(|e| format!("lock: {e}"))?;
-    let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
-    guard.infer_messages(messages)
+    let backend = LocalBackend::default();
+    backend.generate(system, user)
 }

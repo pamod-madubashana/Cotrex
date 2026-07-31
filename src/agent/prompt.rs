@@ -50,40 +50,32 @@ of reasoning — nothing more.",
 ];
 
 // Used when a category prompt has no recognized category (rare: a JSON object with an empty key).
-const DEFAULT_HEADER: &str = "You are a concise senior software engineer. Answer the developer's \
-question briefly and practically. No preamble, no markdown headings.";
+const DEFAULT_HEADER: &str =
+    "You are Cotrex. Answer briefly and use the local context when it helps.";
+
+const DEFAULT_ROLE: &str = "You are Cotrex, a local execution assistant.\n\nYour job:\n- understand the request\n- inspect the local project when needed\n- run shell commands or use tools when appropriate\n- return a concise final answer\n\nDo not create subagents or plans. Do not pretend to be multiple agents.";
 
 // A task either runs a command (and we return the REAL output) or is answered in text. The model
 // decides and replies with JSON: {"run":"<command>"}, {"tool":"<name>","args":{...}}, or {"answer":"<text>"}.
-const DECISION_SYSTEM: &str = "You are an assistant in a developer's CURRENT working directory. \
-FIRST decide whether answering even needs the machine. Each turn, reply with EXACTLY ONE JSON object:\n\
-- {\"answer\":\"<text>\"} — answer the user directly. ONLY for greetings, small talk, or things you \
-already know (language syntax, general coding concepts). NEVER answer with just 'this is the current \
-directory' or similar empty responses.\n\
-- {\"run\":\"<command>\",\"say\":\"<one line>\"} — to inspect the project (files, dirs, git, build \
-state) OR to CARRY OUT an action the user asked for (build, test, run, format, lint, fix…). You have \
-a REAL shell in THIS directory — you are not sandboxed; never say you lack access to the code or \
-build system, just run the command. `say` is one short first-person line telling the user what \
-you're doing or what you just learned, like a person thinking aloud.\n\
-- {\"tool\":\"<name>\",\"args\":{...},\"say\":\"<one line>\"} — use a built-in tool for file operations. \
-Available tools: read({path}), write({path,content}), edit({path,old,new}), glob({pattern}), \
-grep({pattern,path?}). Use tools instead of shell commands when possible.\n\
-IMPORTANT RULES FOR PROJECT QUESTIONS:\n\
-- When the user asks 'what is this project', 'describe the project', 'what does this code do', or \
-ANY question about the project: you MUST first read key files (README.md, Cargo.toml, package.json, \
-etc.) and THEN synthesize a real summary. NEVER answer with just 'current working directory'.\n\
-- When getting to know a project, FIRST find what's ignored — read its .gitignore (or just use `git \
-ls-files`, which already honors it) — and never list or recurse into ignored paths.\n\
-- Always finish with an {\"answer\"} summarizing what you did or found. Output ONLY the JSON.\n\
-Examples:\n\
-Request: hi → {\"answer\":\"Hi! What would you like to do in this project?\"}\n\
-Request: what does the ? operator do in Rust → {\"answer\":\"It propagates errors: on Err it returns \
-early, on Ok it unwraps.\"}\n\
-Request: build this project in release → {\"run\":\"cargo build --release\",\"say\":\"Building it in \
-release mode.\"}\n\
-Request: what is this project → {\"tool\":\"read\",\"args\":{\"path\":\"README.md\"},\"say\":\"Let me \
-read the README to understand the project.\"}\n\
-Request: where are user roles implemented → {\"tool\":\"grep\",\"args\":{\"pattern\":\"role\",\"path\":\"src\"},\"say\":\"Let me search the source for role handling.\"}";
+const DECISION_SYSTEM: &str = r#"
+You are Cotrex, a local developer execution engine.
+
+You operate inside the user's current working directory.
+
+Your job:
+- inspect the local environment when information is required
+- execute requested developer actions
+- return useful results
+- avoid guessing about files, code, configuration, or project state
+
+Every response MUST be exactly one valid JSON object.
+Never output markdown or explanations outside JSON.
+
+Use {"answer":"text"} for direct answers.
+Use {"run":"command","say":"short reason"} for shell commands.
+Use {"tool":"name","args":{},"say":"short reason"} for file tools.
+Prefer tools for file operations and targeted shell commands for everything else.
+"#;
 
 /// The header (system prompt) bound to a category, if it is known.
 pub fn header(category: &str) -> Option<&'static str> {
@@ -115,83 +107,85 @@ pub fn decision_system_with_model(_model_id: &str) -> String {
     } else {
         "Any command runs in a POSIX bash shell — use POSIX tools."
     };
-    format!("{DECISION_SYSTEM} {shell}")
+    build_system_prompt(shell)
 }
 
-// Roles: `cotrex <role> "<task>"` offloads a small task to a role-specific model and returns its
-// answer, so the calling agent just waits (and spends no tokens thinking). Each row is
-// (role, model id, header, mode, max_steps). The model ids are NVIDIA NIM ids served by the
-// configured endpoint; add or retune a role by editing a row.
-//
-// Modes (inspired by OpenCode's agent system):
-// - "primary": the main agent that can run commands and answer (default for assistant)
-// - "subagent": a specialized agent called by another agent (planner, coder, etc.)
-//
-// Max steps: how many command iterations the agent can run before forced to answer.
-const ROLES: &[(&str, &str, &str, &str, usize)] = &[
-    (
-        "planner",
-        "z-ai/glm-5.1",
-        "You are a planning specialist. Given a goal, produce a concise, ordered, actionable plan as \
-        numbered steps. No preamble, no code unless essential.",
-        "subagent",
-        3,
-    ),
-    (
-        "router",
-        "nvidia/nemotron-3-nano-30b-a3b",
-        "You are a router. Given a request, decide the single best next action, tool, or role and \
-        answer in one or two decisive lines. No deliberation in the output.",
-        "subagent",
-        1,
-    ),
-    (
-        "orchestrator",
-        "nvidia/nemotron-3-ultra-550b-a55b",
-        "You are an orchestrator. Break the goal into an ordered list of concrete shell commands or \
-        steps that accomplish it end to end. Be specific and minimal. No prose beyond the steps.",
-        "subagent",
-        4,
-    ),
-    (
-        "coder",
-        "deepseek-ai/deepseek-v4-flash",
-        "You are a senior engineer. Output only the code that solves the task — correct, minimal, \
-        idiomatic. No explanation unless the task asks for it.",
-        "subagent",
-        5,
-    ),
-    (
-        "assistant",
-        "qwen/qwen3-next-80b-a3b-instruct",
-        "You are a concise developer assistant. Answer the request briefly and practically. No fluff.",
-        "primary",
-        6,
-    ),
-];
-
-/// `(model id, header, mode, max_steps)` for a role, if known.
-pub fn role(name: &str) -> Option<(&'static str, &'static str, &'static str, usize)> {
-    ROLES
-        .iter()
-        .find(|(n, _, _, _, _)| *n == name)
-        .map(|(_, m, h, mode, steps)| (*m, *h, *mode, *steps))
+fn build_system_prompt(shell: &str) -> String {
+    format!("{DEFAULT_ROLE}\n\n{DECISION_SYSTEM}\n\n{shell}")
 }
 
-/// Return all available roles as `(name, model, description)` tuples.
-pub fn roles_list() -> Vec<(&'static str, &'static str, &'static str)> {
-    ROLES
-        .iter()
-        .map(|(name, model, desc, _, _)| (*name, *model, *desc))
-        .collect()
+/// Keep the old role hook as a stub so callers can still compile while the single-assistant flow is used.
+pub fn role(_name: &str) -> Option<(&'static str, &'static str, &'static str, usize)> {
+    None
 }
 
-/// Build an `LlmConfig` that reuses the configured endpoint + key but swaps in `model`.
-pub fn with_model(base: &LlmConfig, model: &str) -> LlmConfig {
-    LlmConfig {
-        url: base.url.clone(),
-        key: base.key.clone(),
-        model: model.to_string(),
+fn prepare_task(task: &str) -> String {
+    let lower = task.to_lowercase();
+    let is_project_query = lower.contains("what is this project")
+        || lower.contains("what does this project")
+        || lower.contains("describe this project")
+        || lower.contains("what is this code")
+        || lower.contains("what does this code")
+        || lower.contains("explain this repository")
+        || lower.contains("describe this repository");
+
+    if !is_project_query {
+        return task.to_string();
+    }
+
+    let mut info = String::new();
+
+    if let Ok(readme) = std::fs::read_to_string("README.md") {
+        let preview: String = readme.lines().take(40).collect::<Vec<_>>().join("\n");
+        info.push_str(&format!("README.md:\n{preview}\n\n"));
+    }
+
+    if let Ok(toml) = std::fs::read_to_string("Cargo.toml") {
+        let preview: String = toml.lines().take(30).collect::<Vec<_>>().join("\n");
+        info.push_str(&format!("Cargo.toml:\n{preview}\n\n"));
+    } else if let Ok(pkg) = std::fs::read_to_string("package.json") {
+        let preview: String = pkg.lines().take(30).collect::<Vec<_>>().join("\n");
+        info.push_str(&format!("package.json:\n{preview}\n\n"));
+    }
+
+    if let Ok(entries) = std::fs::read_dir("src") {
+        let mut names: Vec<String> = entries
+            .filter_map(Result::ok)
+            .filter_map(|e| {
+                e.file_type()
+                    .ok()
+                    .filter(|t| t.is_dir())
+                    .map(|_| e.file_name().to_string_lossy().into_owned())
+            })
+            .collect();
+        names.sort();
+        if !names.is_empty() {
+            info.push_str(&format!("src/: {}\n\n", names.join(", ")));
+        }
+    }
+
+    if let Ok(gitignore) = std::fs::read_to_string(".gitignore") {
+        let preview: String = gitignore.lines().take(20).collect::<Vec<_>>().join("\n");
+        info.push_str(&format!(".gitignore:\n{preview}\n\n"));
+    }
+
+    let tree = std::process::Command::new("git")
+        .args(["ls-files", "--short"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    if !tree.is_empty() {
+        let lines: Vec<&str> = tree.lines().take(50).collect();
+        info.push_str(&format!("Project files:\n{}\n", lines.join("\n")));
+    }
+
+    if info.is_empty() {
+        task.to_string()
+    } else {
+        format!(
+            "{task}\n\n--- Project Context ---\n{info}\n--- End Context ---\n\nSummarize what this project is and how it is organized."
+        )
     }
 }
 
@@ -381,66 +375,17 @@ pub fn parse_json(s: &str) -> Result<Vec<(String, String)>, String> {
 }
 
 /// Fulfill a task: ask the model to decide between running a command or answering, then do it.
-/// `role_header` biases the decision (and is the role's persona); `cfg` carries the chosen model.
-/// `max_steps` limits how many command iterations the agent can run before forced to answer.
-/// Returns the exit code (0 for an answered task). Prints the real command output, or the answer,
-/// to stdout.
+/// `cfg` carries the chosen model. `max_steps` limits how many command iterations the agent can run
+/// before forced to answer. Returns the exit code (0 for an answered task). Prints the real command
+/// output, or the answer, to stdout.
 pub fn fulfill(
     task: &str,
     cfg: &LlmConfig,
-    role_header: Option<&str>,
     mode: Mode,
     opts: &Options,
     max_steps: usize,
 ) -> Result<i32, String> {
-    // Pre-process: gather project context for common "what is this" queries so even a small model
-    // can produce a useful summary without needing to decide to use tools itself.
-    let lower = task.to_lowercase();
-    let is_project_query = lower.contains("what is this project")
-        || lower.contains("what does this project")
-        || lower.contains("describe this project")
-        || lower.contains("what is this code")
-        || lower.contains("what does this code");
-
-    let task = if is_project_query {
-        // Gather project info directly and inject into the prompt
-        let mut info = String::new();
-
-        // Try to read README
-        if let Ok(readme) = std::fs::read_to_string("README.md") {
-            let preview: String = readme.lines().take(40).collect::<Vec<_>>().join("\n");
-            info.push_str(&format!("README.md:\n{preview}\n\n"));
-        }
-
-        // Try to read Cargo.toml or package.json
-        if let Ok(toml) = std::fs::read_to_string("Cargo.toml") {
-            let preview: String = toml.lines().take(30).collect::<Vec<_>>().join("\n");
-            info.push_str(&format!("Cargo.toml:\n{preview}\n\n"));
-        } else if let Ok(pkg) = std::fs::read_to_string("package.json") {
-            let preview: String = pkg.lines().take(30).collect::<Vec<_>>().join("\n");
-            info.push_str(&format!("package.json:\n{preview}\n\n"));
-        }
-
-        // Get file tree (shallow)
-        let tree = std::process::Command::new("git")
-            .args(["ls-files", "--short"])
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
-        if !tree.is_empty() {
-            let lines: Vec<&str> = tree.lines().take(50).collect();
-            info.push_str(&format!("Project files:\n{}\n", lines.join("\n")));
-        }
-
-        if !info.is_empty() {
-            format!("{task}\n\n--- Project Context ---\n{info}\n--- End Context ---\n\nBased on the above, summarize what this project is.")
-        } else {
-            task.to_string()
-        }
-    } else {
-        task.to_string()
-    };
+    let task = prepare_task(task);
     let task = &task;
     // Generate for the shell we actually run on (see `exec_capture`): PowerShell on Windows, POSIX
     // bash elsewhere. Mismatching them is what makes a Windows run try to execute Linux commands.
@@ -452,10 +397,7 @@ awk, grep, or `find` with -printf)."
         "Any command runs in a POSIX bash shell — use POSIX tools (find, grep, sed, awk, wc, ls, \
 git); never PowerShell or cmd syntax."
     };
-    let system = match role_header {
-        Some(h) => format!("{h}\n\n{DECISION_SYSTEM} {shell}"),
-        None => format!("{DECISION_SYSTEM} {shell}"),
-    };
+    let system = build_system_prompt(shell);
 
     // Step loop: the model runs commands to gather info (each output fed back, capped), then
     // finishes with an ANALYZED answer — never a raw command dump. A failure is fed back to fix.
@@ -481,32 +423,8 @@ git); never PowerShell or cmd syntax."
                 print_answer(&text, mode);
                 return Ok(0);
             }
-            Decision::Tool { tool, args, say: _ } => {
-                // Show which tool is being used
-                let tool_label = match tool.name {
-                    "read" => {
-                        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("...");
-                        format!("reading {path}")
-                    }
-                    "grep" => {
-                        let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("...");
-                        format!("searching {pattern}")
-                    }
-                    "glob" => {
-                        let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("...");
-                        format!("finding {pattern}")
-                    }
-                    "edit" => {
-                        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("...");
-                        format!("editing {path}")
-                    }
-                    "write" => {
-                        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("...");
-                        format!("writing {path}")
-                    }
-                    other => format!("using {other}"),
-                };
-                say_step(Some(&tool_label), mode);
+            Decision::Tool { tool, args, say } => {
+                say_step(say.as_deref(), mode);
                 let tool_key = format!("tool:{}", tool.name);
                 // Check for duplicate tool+args (loop prevention)
                 let call_sig = format!(
@@ -659,7 +577,6 @@ git); never PowerShell or cmd syntax."
 pub fn fulfill_and_capture(
     task: &str,
     cfg: &LlmConfig,
-    role_header: Option<&str>,
     opts: &Options,
     max_steps: usize,
 ) -> Result<String, String> {
@@ -671,10 +588,7 @@ pub fn fulfill_and_capture(
         "Any command runs in a POSIX bash shell — use POSIX tools (find, grep, sed, awk, wc, ls, \
         git); never PowerShell or cmd syntax."
     };
-    let system = match role_header {
-        Some(h) => format!("{h}\n\n{DECISION_SYSTEM} {shell}"),
-        None => format!("{DECISION_SYSTEM} {shell}"),
-    };
+    let system = build_system_prompt(shell);
 
     let mut transcript_events: Vec<TranscriptEvent> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
@@ -803,19 +717,15 @@ const SAY_COLOR: &str = "\x1b[38;5;153m";
 pub const MAX_STEPS: usize = 6;
 
 /// Maximum number of retry attempts for transient LLM failures.
-#[allow(dead_code)]
 const MAX_RETRIES: usize = 3;
 
 /// Initial backoff duration in milliseconds.
-#[allow(dead_code)]
 const INITIAL_BACKOFF_MS: u64 = 500;
 
 /// Print an answer to stdout. User mode renders markdown to ANSI (headers, lists, syntax-highlighted
 /// code blocks) so it reads in a terminal instead of showing raw ``` fences; Model mode prints the
 /// raw text, since an agent wants plain markdown, not escape codes.
 fn print_answer(text: &str, mode: Mode) {
-    use std::io::Write;
-    let mut stdout = std::io::stdout();
     match mode {
         Mode::User => {
             let opts = markdown_to_ansi::Options {
@@ -824,13 +734,10 @@ fn print_answer(text: &str, mode: Mode) {
                 width: std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()),
                 code_bg: true,
             };
-            let _ = writeln!(stdout, "{}", markdown_to_ansi::render(text, &opts));
+            println!("{}", markdown_to_ansi::render(text, &opts));
         }
-        Mode::Model => {
-            let _ = writeln!(stdout, "{text}");
-        }
+        Mode::Model => println!("{text}"),
     }
-    let _ = stdout.flush();
 }
 
 #[derive(Debug)]
@@ -845,7 +752,6 @@ pub enum Decision {
     Tool {
         tool: &'static crate::agent::tool::Tool,
         args: serde_json::Value,
-        #[allow(dead_code)]
         say: Option<String>,
     },
     Answer(String),
@@ -1232,32 +1138,88 @@ fn trunc(s: &str, max: usize) -> String {
 }
 
 fn one_call(
-    _cfg: &LlmConfig,
+    cfg: &LlmConfig,
     system: &str,
     user: &str,
     mode: Mode,
-    _live: bool,
+    live: bool,
 ) -> Result<String, String> {
-    // Local model inference — no remote API needed
-    #[cfg(feature = "local-model")]
-    {
-        let spinner = (mode == Mode::User).then(|| Spinner::start("thinking"));
-        // Ensure spinner renders at least one frame before blocking inference
-        if spinner.is_some() {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let result = crate::llm::infer_local(system, user);
-        if let Some(s) = spinner {
-            s.complete();
-        }
-        result
-    }
+    let body = serde_json::json!({
+        "model": cfg.model,
+        "temperature": 0.2,
+        "stream": true,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    });
+    // Start the spinner BEFORE the request: a model can hold the connection for seconds (connecting +
+    // thinking server-side) before the first byte. With live=false it spins for the whole call, so
+    // the user always sees progress during the wait instead of a frozen prompt.
+    let phrases = [
+        "cooking",
+        "brewing",
+        "pondering",
+        "crunching",
+        "consulting the oracle",
+        "sparking neurons",
+        "weaving words",
+    ];
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let random_index = (nanos % phrases.len() as u128) as usize;
+    let label = phrases[random_index];
 
-    #[cfg(not(feature = "local-model"))]
-    {
-        let _ = (system, user, mode);
-        Err("local-model feature not enabled".into())
+    let spinner = (mode == Mode::User).then(|| Spinner::start(label));
+
+    // Retry with exponential backoff for transient failures.
+    let mut last_err = String::new();
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            let backoff = INITIAL_BACKOFF_MS * 2u64.pow((attempt - 1) as u32);
+            if let Mode::User = mode {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "  (retry {attempt}/{MAX_RETRIES} after {backoff}ms)"
+                );
+            }
+            thread::sleep(Duration::from_millis(backoff));
+        }
+        match ureq::post(&cfg.url)
+            .set("Authorization", &format!("Bearer {}", cfg.key))
+            .set("Content-Type", "application/json")
+            .send_json(body.clone())
+        {
+            Ok(resp) => {
+                // Handle rate limiting (429) and server errors (5xx) as retryable.
+                let status = resp.status();
+                if status == 429 || (500..600).contains(&status) {
+                    last_err = format!("HTTP {status}");
+                    continue;
+                }
+                return stream(resp, live, spinner);
+            }
+            Err(ureq::Error::Status(status, _resp)) => {
+                // ureq wraps non-2xx responses as errors.
+                if status == 429 || (500..600).contains(&status) {
+                    last_err = format!("HTTP {status}");
+                    continue;
+                }
+                // Non-retryable client error (4xx except 429): fail immediately.
+                return Err(format!("request failed: HTTP {status}"));
+            }
+            Err(e) => {
+                // Network errors are retryable.
+                last_err = format!("{e}");
+                continue;
+            }
+        }
     }
+    Err(format!(
+        "request failed after {MAX_RETRIES} retries: {last_err}"
+    ))
 }
 
 /// Read an OpenAI-compatible SSE stream and accumulate the answer `content`. When `live`, tokens
@@ -1265,7 +1227,6 @@ fn one_call(
 /// otherwise the spinner covers the whole call and nothing is shown — used for the decision turns,
 /// whose raw `{"run":…}` JSON should never reach the user (the model's `say` narrates instead).
 /// `content` is always accumulated and returned. stdout is untouched.
-#[allow(dead_code)]
 fn stream(
     resp: ureq::Response,
     live: bool,
@@ -1493,15 +1454,49 @@ mod tests {
     }
 
     #[test]
-    fn roles_map_to_models() {
-        assert_eq!(role("planner").unwrap().0, "z-ai/glm-5.1");
-        assert_eq!(
-            role("orchestrator").unwrap().0,
-            "nvidia/nemotron-3-ultra-550b-a55b"
+    fn default_role_exists() {
+        assert!(DEFAULT_ROLE.contains("Cotrex"));
+        assert!(decision_system().contains("JSON object"));
+    }
+
+    #[test]
+    fn decision_parses_answer() {
+        match parse_decision(r#"{"answer":"hello there"}"#) {
+            Decision::Answer(text) => assert_eq!(text, "hello there"),
+            other => panic!("expected Answer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decision_parses_tool() {
+        match parse_decision(r#"{"tool":"read","args":{"path":"README.md"}}"#) {
+            Decision::Tool { tool, args, .. } => {
+                assert_eq!(tool.name, "read");
+                assert_eq!(args.get("path").unwrap().as_str().unwrap(), "README.md");
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decision_parses_run() {
+        match parse_decision(r#"{"run":"cargo test","say":"Running tests."}"#) {
+            Decision::Run { cmd, say } => {
+                assert_eq!(cmd, "cargo test");
+                assert_eq!(say.as_deref(), Some("Running tests."));
+            }
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn project_question_requires_context() {
+        let prepared = prepare_task("what is this project");
+        assert!(
+            prepared.contains("Project Context")
+                || prepared.contains("README.md")
+                || prepared.contains("Cargo.toml")
         );
-        assert!(role("coder").is_some());
-        assert!(role("assistant").is_some());
-        assert!(role("nope").is_none());
     }
 
     #[test]
