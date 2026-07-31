@@ -23,6 +23,11 @@ tags what RTK emits.
 The model reads small, structured events instead of noisy logs; a human still gets a glanceable
 trace. It's infrastructure, not an agent.
 
+### v3.0.0 — Local AI Runtime
+
+Cotrex v3.0.0 adds a full AI runtime with local model inference via llama.cpp, a tool execution loop,
+and system management commands for autonomous coding tasks.
+
 ## How it works
 
 ```
@@ -43,5 +48,13 @@ to that dedicated rtk filter (`cargo test` → `rtk cargo test`); anything else 
 - **MCP** — `cotrex mcp` exposes a `run` tool agents call natively
 
 All three funnel into the same execution pipeline.
+
+## New in v3.0.0
+
+- **`cotrex init`** — First-run setup with optional model download
+- **`cotrex model`** — Install, list, remove, and inspect local AI models
+- **`cotrex doctor`** — System health checks and dependency verification
+- **`cotrex demo`** — Runtime microscope for testing tool execution
+- **`cotrex version`** — Version and build info
 
 Next: [Installation](installation).

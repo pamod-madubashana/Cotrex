@@ -1,19 +1,32 @@
 name: Release
-run-name: Release v${{ inputs.version }}
+run-name: Release ${{ github.ref_name }}
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version, no leading v (e.g. 1.0.0) — tags the release v<version>"
-        required: true
-        type: string
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: write
 
 jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run tests
+        run: cargo test --workspace
+
   build:
+    needs: quality-gates
     strategy:
       fail-fast: false
       matrix:
@@ -33,7 +46,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # Build graphify standalone executable so cotrex can embed it.
       - name: Install Python dependencies
         run: pip install pyinstaller graphifyy
       - name: Build graphify executable
@@ -48,20 +60,33 @@ jobs:
             cp dist/graphify target/release/graphify
             chmod +x target/release/graphify
           fi
-      # Build rtk first so cotrex's build.rs can embed it.
       - run: cargo build --release -p rtk
       - run: cargo build --release -p cotrex
       - name: Package cotrex
         shell: bash
         run: |
-          VER="${{ inputs.version }}"; VER="${VER#v}"   # accept 1.0.0 or v1.0.0
+          VER="${{ github.ref_name }}"; VER="${VER#v}"
           NAME="${{ matrix.name }}"
           rm -rf dist
           mkdir dist
+
+          # Copy release artifacts
           if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a "dist/cotrex-${VER}-${NAME}.zip" ./target/release/cotrex.exe
+            cp target/release/cotrex.exe dist/
           else
-            tar czf "dist/cotrex-${VER}-${NAME}.tar.gz" -C target/release cotrex
+            cp target/release/cotrex dist/
+          fi
+
+          # Copy documentation
+          cp README.md dist/ 2>/dev/null || true
+          cp LICENSE dist/ 2>/dev/null || true
+          cp CHANGELOG.md dist/ 2>/dev/null || true
+
+          # Create archive
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "dist/cotrex-${VER}-${NAME}.zip" dist/cotrex.exe dist/README.md dist/LICENSE dist/CHANGELOG.md
+          else
+            tar czf "dist/cotrex-${VER}-${NAME}.tar.gz" -C dist cotrex README.md LICENSE CHANGELOG.md
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -80,8 +105,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VER="${{ inputs.version }}"; VER="${VER#v}"   # accept 1.0.0 or v1.0.0
-          gh release create "v${VER}" dist/* \
+          VER="${{ github.ref_name }}"; VER="${VER#v}"
+          gh release create "${{ github.ref_name }}" dist/* \
             --repo "${{ github.repository }}" \
             --title "Release v${VER}" \
             --generate-notes

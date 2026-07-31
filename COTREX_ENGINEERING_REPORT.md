@@ -152,7 +152,7 @@ cotrex-ai/
 
 ### Main Crate: `cotrex`
 
-- **Version:** 2.8.1
+- **Version:** 3.0.0
 - **Edition:** 2021
 - **Dependencies:** clap, serde, serde_json, ureq, inquire, dirs, toml, markdown-to-ansi, glob, regex, indicatif
 
@@ -349,8 +349,8 @@ All tools use JSON input/output with structured schemas defined in `src/llm/mcp.
 | v1.0 | Completed | Initial release, RTK integration |
 | v2.0 | Completed | MCP server, agent roles |
 | v2.5.0 | Completed | Graphify integration |
-| v2.8.1 | Current | cotrex-ai submodule added |
-| v3.0 | Planned | Full cotrex-ai integration |
+| v2.8.1 | Completed | cotrex-ai submodule added |
+| v3.0 | Current | Full cotrex-ai integration, tool execution loop, local inference |
 
 ### cotrex-ai Milestones
 
@@ -363,8 +363,12 @@ All tools use JSON input/output with structured schemas defined in `src/llm/mcp.
 | 5 | Complete | RFC-0002: Projection Engine |
 | 6 | Complete | RFC-0003: Observation Pipeline |
 | 7 | Complete | RFC-0004: Execution Engine |
-| 8 | Pending | Real AI provider (Candle or llama.cpp) |
-| 9 | Pending | RFC-0005: AI Runtime Integration |
+| 8 | Complete | RFC-0007: Local Provider Runtime |
+| 9 | Complete | RFC-0008: llama.cpp Provider |
+| J | Complete | Tool Execution Loop — built-in tools, permission model, demo mode |
+| K | Complete | System Management — init, doctor, version commands |
+| L | Complete | Packaging — cross-platform release archives |
+| M | Complete | Distribution — GitHub Releases with quality gates |
 
 ### Completed Features
 
@@ -378,14 +382,20 @@ All tools use JSON input/output with structured schemas defined in `src/llm/mcp.
 - Projection engine with multiple projections
 - Observation pipeline
 - Execution engine with built-in executors
+- Tool execution loop with built-in tools (read/write/edit/glob/grep)
+- Permission model for tool safety
+- Demo mode for testing tool execution
+- System management commands (init, doctor, version, model)
+- Local model inference via llama.cpp
+- Cross-platform release packaging
 
 ### Current Milestone
 
-**cotrex-ai Integration:** Adding the cotrex-ai submodule as the foundation for the AI runtime layer.
+**v3.0.0 Released:** Full cotrex-ai integration with tool execution loop, local model inference, and system management commands.
 
 ### Next Milestone
 
-**RFC-0005: AI Runtime Integration:** Connect Cotrex core with cotrex-ai runtime for full AI capability execution.
+**Phase N:** Complete the agentic loop with streaming responses, multi-turn conversations, and production-grade provider management.
 
 ---
 
@@ -545,22 +555,27 @@ Total: 196 passed; 0 failed; 1 ignored
 | RFC-0002 | Projection Engine | Implemented | Multiple projections, checkpoints |
 | RFC-0003 | Observation Pipeline | Implemented | File system watching |
 | RFC-0004 | Execution Engine | Implemented | Command, file write/delete executors |
-| RFC-0005 | AI Runtime Integration | Planned | Connect Cotrex with cotrex-ai |
+| RFC-0005 | AI Runtime Integration | Implemented | Connect Cotrex with cotrex-ai |
+| RFC-0006 | Persistent Event Store | Implemented | File-backed JSONL store |
+| RFC-0007 | Local Provider Runtime | Implemented | Provider lifecycle, context builder |
+| RFC-0008 | llama.cpp Provider | Implemented | Real inference via llama.cpp FFI |
+| RFC-0009 | Inference Pipeline | Implemented | Full inference pipeline |
+| RFC-0010 | Model Output Contract | Implemented | Model output parsing and validation |
 
 ## Appendix: ADR Status
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| ADR-0001 | Event Sourcing | Planned |
+| ADR-0001 | Event Sourcing | Accepted |
 | ADR-0002 | Protocol Versioning Strategy | Accepted |
-| ADR-0003 | Closed Capability Protocol | Planned |
-| ADR-0004 | Cargo Workspace | Planned |
-| ADR-0005 | AI as Advisory Layer | Planned |
-| ADR-0006 | Event Store Persistence Strategy | Proposed |
+| ADR-0003 | Closed Capability Protocol | Accepted |
+| ADR-0004 | Cargo Workspace | Accepted |
+| ADR-0005 | AI as Advisory Layer | Accepted |
+| ADR-0006 | Event Store Persistence Strategy | Accepted |
 
 ---
 
-**Report Generated:** 2026-07-30
-**Cotrex Version:** 2.8.1
-**cotrex-ai Version:** v0.7.0-rfc-0004-complete
+**Report Generated:** 2026-07-31
+**Cotrex Version:** 3.0.0
+**cotrex-ai Version:** v1.0.0
 **Protocol Version:** 1.0

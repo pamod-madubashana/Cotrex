@@ -5,11 +5,12 @@
 //! tool abstraction so the model can call structured tools directly, improving reliability and
 //! reducing token waste from shell command generation.
 
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
+use serde_json::Value;
+
 /// A tool that the agentic loop can invoke.
+#[derive(Copy, Clone)]
 pub struct Tool {
     pub name: &'static str,
     pub description: &'static str,
@@ -17,20 +18,104 @@ pub struct Tool {
     pub execute: fn(&ToolContext, &serde_json::Value) -> Result<String, String>,
 }
 
-/// Context passed to tool execution.
+impl std::fmt::Debug for Tool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tool")
+            .field("name", &self.name)
+            .field("description", &self.description)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Context passed to tool execution. Deliberately minimal — no permissions, no session state.
+/// Authorization is checked before the tool is called, not inside it.
 pub struct ToolContext {
     pub workdir: PathBuf,
 }
 
-/// Get the list of built-in tools available to the agentic loop.
-pub fn builtins() -> Vec<&'static Tool> {
-    vec![&READ_TOOL, &WRITE_TOOL, &EDIT_TOOL, &GLOB_TOOL, &GREP_TOOL]
+/// Centralized output limiting. Stateless policy — no internal counters.
+pub struct OutputLimiter {
+    pub max_lines: usize,
 }
+
+impl OutputLimiter {
+    pub fn truncate(&self, output: &str) -> String {
+        let mut out = String::new();
+        for (i, line) in output.lines().enumerate() {
+            if i >= self.max_lines {
+                let extra = output.lines().count().saturating_sub(self.max_lines);
+                out.push_str(&format!("… ({extra} more lines truncated)\n"));
+                break;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+}
+
+/// Static registry of built-in tools. Zero allocation, deterministic startup.
+pub static BUILTINS: &[Tool] = &[READ_TOOL, WRITE_TOOL, EDIT_TOOL, GLOB_TOOL, GREP_TOOL];
+
+/// Resolve a tool name against the static registry.
+pub fn resolve(name: &str) -> Option<&'static Tool> {
+    BUILTINS.iter().find(|t| t.name == name)
+}
+
+/// Validate tool arguments against the tool's JSON Schema.
+/// Returns Ok(()) if valid, or Err with a descriptive message.
+pub fn validate_args(tool: &Tool, args: &Value) -> Result<(), String> {
+    let schema: Value = serde_json::from_str(tool.parameters)
+        .map_err(|e| format!("invalid schema for {}: {e}", tool.name))?;
+
+    let obj = args
+        .as_object()
+        .ok_or(format!("{}: arguments must be a JSON object", tool.name))?;
+
+    // Check required fields
+    if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
+        for req in required {
+            if let Some(field) = req.as_str() {
+                if !obj.contains_key(field) {
+                    return Err(format!("{}: missing required field '{field}'", tool.name));
+                }
+            }
+        }
+    }
+
+    // Check field types against properties
+    if let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) {
+        for (field, schema_def) in properties {
+            if let Some(value) = obj.get(field) {
+                if let Some(expected_type) = schema_def.get("type").and_then(|t| t.as_str()) {
+                    let actual_type = match value {
+                        Value::String(_) => "string",
+                        Value::Number(_) => "number",
+                        Value::Bool(_) => "boolean",
+                        Value::Array(_) => "array",
+                        Value::Object(_) => "object",
+                        Value::Null => "null",
+                    };
+                    if actual_type != expected_type {
+                        return Err(format!(
+                            "{}: field '{field}' must be {expected_type}, got {actual_type}",
+                            tool.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ── Built-in tools ──────────────────────────────────────────────────────────
 
 /// Read a file's contents.
 static READ_TOOL: Tool = Tool {
     name: "read",
-    description: "Read a file's contents. Returns the full text content.",
+    description: "Read a file's contents",
     parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"File path relative to workdir"}},"required":["path"]}"#,
     execute: |ctx, args| {
         let path = args
@@ -45,7 +130,7 @@ static READ_TOOL: Tool = Tool {
 /// Write content to a file (creates or overwrites).
 static WRITE_TOOL: Tool = Tool {
     name: "write",
-    description: "Write content to a file. Creates parent directories if needed.",
+    description: "Write content to a file",
     parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"File path relative to workdir"},"content":{"type":"string","description":"Content to write"}},"required":["path","content"]}"#,
     execute: |ctx, args| {
         let path = args
@@ -68,7 +153,7 @@ static WRITE_TOOL: Tool = Tool {
 /// Edit a file by replacing a string.
 static EDIT_TOOL: Tool = Tool {
     name: "edit",
-    description: "Edit a file by replacing an exact string match with new content.",
+    description: "Edit a file by replacing an exact string match",
     parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"File path relative to workdir"},"old":{"type":"string","description":"Exact string to find (must match uniquely)"},"new":{"type":"string","description":"Replacement string"}},"required":["path","old","new"]}"#,
     execute: |ctx, args| {
         let path = args
@@ -91,8 +176,7 @@ static EDIT_TOOL: Tool = Tool {
         }
         if count > 1 {
             return Err(format!(
-                "'{old}' matches {} times in {path} — provide more context",
-                count
+                "'{old}' matches {count} times in {path} — provide more context"
             ));
         }
         let updated = content.replacen(old, new, 1);
@@ -104,7 +188,7 @@ static EDIT_TOOL: Tool = Tool {
 /// Glob for files matching a pattern.
 static GLOB_TOOL: Tool = Tool {
     name: "glob",
-    description: "Find files matching a glob pattern (e.g. '**/*.rs', 'src/**/*.ts').",
+    description: "Find files matching a glob pattern",
     parameters: r#"{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern relative to workdir"}},"required":["pattern"]}"#,
     execute: |ctx, args| {
         let pattern = args
@@ -134,7 +218,7 @@ static GLOB_TOOL: Tool = Tool {
 /// Search file contents with a regex pattern.
 static GREP_TOOL: Tool = Tool {
     name: "grep",
-    description: "Search file contents for a regex pattern. Returns matching lines with file:line.",
+    description: "Search file contents with a regex pattern",
     parameters: r#"{"type":"object","properties":{"pattern":{"type":"string","description":"Regex pattern to search for"},"path":{"type":"string","description":"Directory or file to search in (relative to workdir, default: .)"}},"required":["pattern"]}"#,
     execute: |ctx, args| {
         let pattern = args
@@ -161,6 +245,8 @@ static GREP_TOOL: Tool = Tool {
         }
     },
 };
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn resolve_path(workdir: &Path, relative: &str) -> PathBuf {
     let p = Path::new(relative);
@@ -258,5 +344,71 @@ mod tests {
         let result = (EDIT_TOOL.execute)(&ctx, &args);
         assert!(result.is_ok());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_args_valid() {
+        let args = serde_json::json!({"path": "foo.rs"});
+        assert!(validate_args(&READ_TOOL, &args).is_ok());
+    }
+
+    #[test]
+    fn validate_args_missing_required() {
+        let args = serde_json::json!({});
+        let err = validate_args(&READ_TOOL, &args).unwrap_err();
+        assert!(err.contains("missing required field 'path'"));
+    }
+
+    #[test]
+    fn validate_args_wrong_type() {
+        let args = serde_json::json!({"path": 123});
+        let err = validate_args(&READ_TOOL, &args).unwrap_err();
+        assert!(err.contains("must be string, got number"));
+    }
+
+    #[test]
+    fn validate_args_not_object() {
+        let args = serde_json::json!("just a string");
+        let err = validate_args(&READ_TOOL, &args).unwrap_err();
+        assert!(err.contains("must be a JSON object"));
+    }
+
+    #[test]
+    fn resolve_finds_builtin() {
+        assert!(resolve("read").is_some());
+        assert!(resolve("write").is_some());
+        assert!(resolve("edit").is_some());
+        assert!(resolve("glob").is_some());
+        assert!(resolve("grep").is_some());
+        assert!(resolve("writee").is_none());
+        assert!(resolve("unknown").is_none());
+    }
+
+    #[test]
+    fn output_limiter_truncates() {
+        let limiter = OutputLimiter { max_lines: 2 };
+        let output = "line1\nline2\nline3\nline4\n";
+        let result = limiter.truncate(output);
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.len(), 3); // 2 content + 1 truncation message
+        assert!(lines[2].contains("2 more lines"));
+    }
+
+    #[test]
+    fn output_limiter_no_truncation() {
+        let limiter = OutputLimiter { max_lines: 10 };
+        let output = "line1\nline2\n";
+        let result = limiter.truncate(output);
+        assert_eq!(result, "line1\nline2\n");
+    }
+
+    #[test]
+    fn unknown_tool_does_not_reach_executor() {
+        // Static registry resolution is a security boundary.
+        // A typo like "writee" should fail before any execution path.
+        assert!(resolve("writee").is_none());
+        assert!(resolve("").is_none());
+        assert!(resolve("rm").is_none());
+        assert!(resolve("exec").is_none());
     }
 }

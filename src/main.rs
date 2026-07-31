@@ -4,6 +4,7 @@
 
 mod agent;
 mod ai_runtime;
+mod commands;
 mod config;
 mod core;
 mod dispatch;

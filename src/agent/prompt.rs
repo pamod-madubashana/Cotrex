@@ -14,11 +14,13 @@
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, IsTerminal, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use crate::agent::tool::{self, OutputLimiter, ToolContext, BUILTINS};
 use crate::core::intent::Intent;
 use crate::core::orchestrate::{self, Options};
 use crate::llm::LlmConfig;
@@ -52,7 +54,7 @@ const DEFAULT_HEADER: &str = "You are a concise senior software engineer. Answer
 question briefly and practically. No preamble, no markdown headings.";
 
 // A task either runs a command (and we return the REAL output) or is answered in text. The model
-// decides and replies with JSON: {"run":"<command>"} or {"answer":"<text>"}.
+// decides and replies with JSON: {"run":"<command>"}, {"tool":"<name>","args":{...}}, or {"answer":"<text>"}.
 const DECISION_SYSTEM: &str = "You are an assistant in a developer's CURRENT working directory. \
 FIRST decide whether answering even needs the machine. Each turn, reply with EXACTLY ONE JSON object:\n\
 - {\"answer\":\"<text>\"} — answer the user directly. Use this RIGHT AWAY when no local information is \
@@ -67,13 +69,17 @@ you're doing or what you just learned, like a person thinking aloud: \"Let me bu
 \"Not there — let me check main.rs.\", \"Found them.\" One command; when inspecting, go ONE level at \
 a time, skip vendored/build dirs (vendor, target, node_modules, .git, dist), never dump the whole \
 recursive tree.\n\
+- {\"tool\":\"<name>\",\"args\":{...},\"say\":\"<one line>\"} — use a built-in tool for file operations. \
+Available tools: read({path}), write({path,content}), edit({path,old,new}), glob({pattern}), \
+grep({pattern,path?}). Use tools instead of shell commands when possible — they are faster and \
+more reliable for reading, searching, and editing files.\n\
 When getting to know a project, FIRST find what's ignored — read its .gitignore (or just use `git \
 ls-files`, which already honors it) — and never list or recurse into ignored paths (node_modules, \
 target, dist, build artifacts). A raw recursive listing that walks ignored dirs is wrong.\n\
-Answer directly for greetings and general/coding questions; RUN commands to inspect the project or \
-to do what the user asked — don't refuse or ask permission for a normal dev command. Use the fewest \
-that do the job, and cite the concrete location (path:line) when you find what was asked. Always \
-finish with an {\"answer\"} summarizing what you did or found. Output ONLY the JSON.\n\
+Answer directly for greetings and general/coding questions; RUN commands or TOOLS to inspect the \
+project or to do what the user asked — don't refuse or ask permission for a normal dev command. \
+Use the fewest that do the job, and cite the concrete location (path:line) when you find what was \
+asked. Always finish with an {\"answer\"} summarizing what you did or found. Output ONLY the JSON.\n\
 Examples:\n\
 Request: hi → {\"answer\":\"Hi! What would you like to do in this project?\"}\n\
 Request: what does the ? operator do in Rust → {\"answer\":\"It propagates errors: on Err it returns \
@@ -82,8 +88,8 @@ Request: build this project in release → {\"run\":\"cargo build --release\",\"
 release mode.\"}\n\
 Request: what is this project → {\"run\":\"git ls-files\",\"say\":\"Let me list the tracked files to \
 see what this is.\"}\n\
-Request: where are user roles implemented → {\"run\":\"Select-String -Path src\\\\*.rs -Pattern \
-role\",\"say\":\"Let me search the source for role handling.\"}";
+Request: where are user roles implemented → {\"tool\":\"grep\",\"args\":{\"pattern\":\"role\",\"path\":\"src\"},\"say\":\"Let me search the source for role handling.\"}\n\
+Request: read main.rs → {\"tool\":\"read\",\"args\":{\"path\":\"src/main.rs\"},\"say\":\"Reading main.rs.\"}";
 
 /// The header (system prompt) bound to a category, if it is known.
 pub fn header(category: &str) -> Option<&'static str> {
@@ -395,10 +401,13 @@ git); never PowerShell or cmd syntax."
 
     // Step loop: the model runs commands to gather info (each output fed back, capped), then
     // finishes with an ANALYZED answer — never a raw command dump. A failure is fed back to fix.
-    let mut transcript = String::new();
+    let mut transcript_events: Vec<TranscriptEvent> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new(); // (cmd, error) pairs
+    let perms = crate::agent::permission::Permissions::default();
+    let limiter = OutputLimiter { max_lines: 500 };
     for step in 0..max_steps {
+        let transcript = render_transcript(&transcript_events);
         let user = if transcript.is_empty() {
             task.to_string()
         } else {
@@ -414,14 +423,117 @@ git); never PowerShell or cmd syntax."
                 print_answer(&text, mode);
                 return Ok(0);
             }
+            Decision::Tool { tool, args, say } => {
+                say_step(say.as_deref(), mode);
+                let tool_key = format!("tool:{}", tool.name);
+                // Check for duplicate tool+args (loop prevention)
+                let call_sig = format!(
+                    "{}:{}",
+                    tool_key,
+                    serde_json::to_string(&args).unwrap_or_default()
+                );
+                if seen.contains(&call_sig) {
+                    break;
+                }
+                seen.push(call_sig);
+
+                transcript_events.push(TranscriptEvent::ToolCall {
+                    name: tool.name,
+                    args: args.clone(),
+                });
+
+                // Validate args against JSON Schema before permission check
+                if let Err(e) = tool::validate_args(tool, &args) {
+                    transcript_events.push(TranscriptEvent::ToolResult {
+                        name: tool.name,
+                        output: e,
+                        error: true,
+                    });
+                    continue;
+                }
+
+                // Permission check
+                match perms.evaluate(tool.name, None) {
+                    crate::agent::permission::Action::Deny => {
+                        transcript_events.push(TranscriptEvent::ToolResult {
+                            name: tool.name,
+                            output: "Permission denied by policy.".to_string(),
+                            error: true,
+                        });
+                    }
+                    crate::agent::permission::Action::Ask => {
+                        // In User mode, prompt; in Model mode, allow (MCP gates externally)
+                        if matches!(mode, Mode::User) {
+                            eprint!("  {}? (y/n) ", tool.description);
+                            let _ = std::io::stderr().flush();
+                            let mut input = String::new();
+                            if std::io::stdin().read_line(&mut input).unwrap_or(0) == 0
+                                || !is_yes(&input)
+                            {
+                                transcript_events.push(TranscriptEvent::ToolResult {
+                                    name: tool.name,
+                                    output: "Permission denied by user.".to_string(),
+                                    error: true,
+                                });
+                                continue;
+                            }
+                        }
+                        // Execute
+                        let ctx = ToolContext {
+                            workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                        };
+                        match (tool.execute)(&ctx, &args) {
+                            Ok(output) => {
+                                let truncated = limiter.truncate(&output);
+                                transcript_events.push(TranscriptEvent::ToolResult {
+                                    name: tool.name,
+                                    output: truncated,
+                                    error: false,
+                                });
+                            }
+                            Err(e) => {
+                                transcript_events.push(TranscriptEvent::ToolResult {
+                                    name: tool.name,
+                                    output: e,
+                                    error: true,
+                                });
+                            }
+                        }
+                    }
+                    crate::agent::permission::Action::Allow => {
+                        let ctx = ToolContext {
+                            workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                        };
+                        match (tool.execute)(&ctx, &args) {
+                            Ok(output) => {
+                                let truncated = limiter.truncate(&output);
+                                transcript_events.push(TranscriptEvent::ToolResult {
+                                    name: tool.name,
+                                    output: truncated,
+                                    error: false,
+                                });
+                            }
+                            Err(e) => {
+                                transcript_events.push(TranscriptEvent::ToolResult {
+                                    name: tool.name,
+                                    output: e,
+                                    error: true,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
             // A weak model loops, re-running a command it already ran. That yields no new info, so
             // break to the forced answer instead of spinning.
             Decision::Run { cmd, .. } if seen.contains(&cmd) => {
                 // If the command failed before, give the model one more chance with a hint.
                 if failed.iter().any(|(c, _)| *c == cmd) && step < max_steps - 1 {
-                    transcript.push_str(&format!(
-                        "$ {cmd}\n(already failed — try a different command)\n\n"
-                    ));
+                    transcript_events.push(TranscriptEvent::Shell {
+                        cmd,
+                        exit_code: -1,
+                        output: "already failed — try a different command".to_string(),
+                    });
                     continue;
                 }
                 break;
@@ -441,14 +553,16 @@ git); never PowerShell or cmd syntax."
                 if code != 0 {
                     failed.push((cmd.clone(), format!("exit {code}: {}", trunc(&out, 200))));
                 }
-                transcript.push_str(&format!(
-                    "$ {cmd}\n(exit {code})\n{}\n\n",
-                    trunc(&out, 1500)
-                ));
+                transcript_events.push(TranscriptEvent::Shell {
+                    cmd,
+                    exit_code: code,
+                    output: limiter.truncate(&trunc(&out, 1500)),
+                });
             }
         }
     }
     // Out of steps: force a final answer from what we've gathered.
+    let transcript = render_transcript(&transcript_events);
     let user = format!(
         "Request: {task}\n\nCommands run so far:\n{transcript}\nGive your final answer now as {{\"answer\":\"...\"}}."
     );
@@ -480,10 +594,13 @@ pub fn fulfill_and_capture(
         None => format!("{DECISION_SYSTEM} {shell}"),
     };
 
-    let mut transcript = String::new();
+    let mut transcript_events: Vec<TranscriptEvent> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
+    let _perms = crate::agent::permission::Permissions::default();
+    let limiter = OutputLimiter { max_lines: 500 };
     for step in 0..max_steps {
+        let transcript = render_transcript(&transcript_events);
         let user = if transcript.is_empty() {
             task.to_string()
         } else {
@@ -498,11 +615,61 @@ pub fn fulfill_and_capture(
             Decision::Answer(text) => {
                 return Ok(text);
             }
+            Decision::Tool { tool, args, say: _ } => {
+                let call_sig = format!(
+                    "tool:{}:{}",
+                    tool.name,
+                    serde_json::to_string(&args).unwrap_or_default()
+                );
+                if seen.contains(&call_sig) {
+                    break;
+                }
+                seen.push(call_sig);
+
+                transcript_events.push(TranscriptEvent::ToolCall {
+                    name: tool.name,
+                    args: args.clone(),
+                });
+
+                // Validate args before permission check
+                if let Err(e) = tool::validate_args(tool, &args) {
+                    transcript_events.push(TranscriptEvent::ToolResult {
+                        name: tool.name,
+                        output: e,
+                        error: true,
+                    });
+                    continue;
+                }
+
+                // Model mode: always execute (MCP gates externally)
+                let ctx = ToolContext {
+                    workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                };
+                match (tool.execute)(&ctx, &args) {
+                    Ok(output) => {
+                        let truncated = limiter.truncate(&output);
+                        transcript_events.push(TranscriptEvent::ToolResult {
+                            name: tool.name,
+                            output: truncated,
+                            error: false,
+                        });
+                    }
+                    Err(e) => {
+                        transcript_events.push(TranscriptEvent::ToolResult {
+                            name: tool.name,
+                            output: e,
+                            error: true,
+                        });
+                    }
+                }
+            }
             Decision::Run { cmd, .. } if seen.contains(&cmd) => {
                 if failed.iter().any(|(c, _)| *c == cmd) && step < max_steps - 1 {
-                    transcript.push_str(&format!(
-                        "$ {cmd}\n(already failed — try a different command)\n\n"
-                    ));
+                    transcript_events.push(TranscriptEvent::Shell {
+                        cmd,
+                        exit_code: -1,
+                        output: "already failed — try a different command".to_string(),
+                    });
                     continue;
                 }
                 break;
@@ -513,14 +680,16 @@ pub fn fulfill_and_capture(
                 if code != 0 {
                     failed.push((cmd.clone(), format!("exit {code}: {}", trunc(&out, 200))));
                 }
-                transcript.push_str(&format!(
-                    "$ {cmd}\n(exit {code})\n{}\n\n",
-                    trunc(&out, 1500)
-                ));
+                transcript_events.push(TranscriptEvent::Shell {
+                    cmd,
+                    exit_code: code,
+                    output: limiter.truncate(&trunc(&out, 1500)),
+                });
             }
         }
     }
     // Out of steps: force a final answer.
+    let transcript = render_transcript(&transcript_events);
     let user = format!(
         "Request: {task}\n\nCommands run so far:\n{transcript}\nGive your final answer now as {{\"answer\":\"...\"}}."
     );
@@ -530,6 +699,11 @@ pub fn fulfill_and_capture(
         return Ok(text);
     }
     Ok("No answer produced.".to_string())
+}
+
+/// Render transcript events to a string for the prompt.
+fn render_transcript(events: &[TranscriptEvent]) -> String {
+    events.iter().map(|e| e.render()).collect()
 }
 
 /// Show the model's one-line narration of a step ("Let me check the routes.") to a human, in User
@@ -570,20 +744,116 @@ fn print_answer(text: &str, mode: Mode) {
     }
 }
 
-enum Decision {
+#[derive(Debug)]
+pub enum Decision {
     /// Run a command to gather info (the loop continues and feeds the output back). `say` is the
     /// model's own one-line narration of what it's about to do, shown to a human before the command.
     Run {
         say: Option<String>,
         cmd: String,
     },
+    /// Call a built-in tool. Resolved to a `&'static Tool` during parsing.
+    Tool {
+        tool: &'static crate::agent::tool::Tool,
+        args: serde_json::Value,
+        say: Option<String>,
+    },
     Answer(String),
 }
 
-/// Read the model's JSON decision: `{"run":…}` → gather via a command, `{"answer":…}` → final text.
-/// An optional `say` narrates the step. Anything that isn't our JSON is treated as a plain answer
-/// (graceful when a model strays).
-fn parse_decision(content: &str) -> Decision {
+/// Structured transcript events for tool execution.
+#[allow(dead_code)]
+enum TranscriptEvent {
+    Assistant(String),
+    ToolCall {
+        name: &'static str,
+        args: serde_json::Value,
+    },
+    ToolResult {
+        name: &'static str,
+        output: String,
+        error: bool,
+    },
+    Shell {
+        cmd: String,
+        exit_code: i32,
+        output: String,
+    },
+}
+
+impl TranscriptEvent {
+    /// Render this event to a string for the prompt.
+    fn render(&self) -> String {
+        match self {
+            TranscriptEvent::Assistant(text) => format!("Assistant: {text}\n"),
+            TranscriptEvent::ToolCall { name, args } => {
+                let args_str = format_tool_args(name, args);
+                format!("> {name}({args_str})\n")
+            }
+            TranscriptEvent::ToolResult {
+                name: _,
+                output,
+                error,
+            } => {
+                if *error {
+                    format!("[error] {output}\n")
+                } else {
+                    format!("{output}\n")
+                }
+            }
+            TranscriptEvent::Shell {
+                cmd,
+                exit_code,
+                output,
+            } => {
+                format!("$ {cmd}\n(exit {exit_code})\n{output}\n")
+            }
+        }
+    }
+}
+
+/// Format tool args for display in the transcript.
+fn format_tool_args(name: &str, args: &serde_json::Value) -> String {
+    match name {
+        "read" | "write" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            if name == "write" {
+                let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                format!("\"{path}\", \"{}\"", truncate_str(content, 40))
+            } else {
+                format!("\"{path}\"")
+            }
+        }
+        "edit" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            let old = args.get("old").and_then(|v| v.as_str()).unwrap_or("");
+            format!("\"{path}\", \"{}\"", truncate_str(old, 30))
+        }
+        "glob" => {
+            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("\"{pattern}\"")
+        }
+        "grep" => {
+            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("?");
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+            format!("\"{pattern}\", \"{path}\"")
+        }
+        _ => format!("{args}"),
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
+}
+
+/// Read the model's JSON decision: `{"run":…}` → gather via a command, `{"tool":…,…}` → call a
+/// built-in tool, `{"answer":…}` → final text. An optional `say` narrates the step. Anything that
+/// isn't our JSON is treated as a plain answer (graceful when a model strays).
+pub fn parse_decision(content: &str) -> Decision {
     // The model is told to emit ONE JSON object, but a weak one sometimes emits several (or trailing
     // prose). Parse the FIRST complete object from the first `{` — a span of first-`{`..last-`}`
     // would glue multiple objects into invalid JSON and lose the decision entirely.
@@ -597,6 +867,18 @@ fn parse_decision(content: &str) -> Decision {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(String::from);
+            // Check for tool call — resolve against static registry immediately.
+            if let Some(name) = v.get("tool").and_then(|x| x.as_str()) {
+                if let Some(tool) = tool::resolve(name) {
+                    let args = v.get("args").cloned().unwrap_or(serde_json::json!({}));
+                    return Decision::Tool { tool, args, say };
+                }
+                // Unknown tool name — fall through to answer with error context.
+                return Decision::Answer(format!(
+                    "Unknown tool \"{name}\"\n\nAvailable tools:\n{}",
+                    tool_list_with_descriptions()
+                ));
+            }
             if let Some(cmd) = v.get("run").and_then(|x| x.as_str()) {
                 if !cmd.trim().is_empty() {
                     return Decision::Run {
@@ -611,6 +893,15 @@ fn parse_decision(content: &str) -> Decision {
         }
     }
     Decision::Answer(content.trim().to_string())
+}
+
+/// Format the available tools list with descriptions for error messages.
+fn tool_list_with_descriptions() -> String {
+    BUILTINS
+        .iter()
+        .map(|t| format!("  {:<8} {}", t.name, t.description))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Run `cmd` via rtk and capture its combined output. Generated commands target the native shell —
@@ -1194,5 +1485,112 @@ mod tests {
         assert!(!is_structure_request("add a tree data structure"));
         assert!(!is_structure_request("build the project"));
         assert!(!is_structure_request("hello world"));
+    }
+
+    // ── N1: Tool execution loop tests ───────────────────────────────────────
+
+    #[test]
+    fn parse_decision_tool_call() {
+        let input = r#"{"tool":"read","args":{"path":"src/main.rs"},"say":"Reading main.rs."}"#;
+        match parse_decision(input) {
+            Decision::Tool { tool, args, say } => {
+                assert_eq!(tool.name, "read");
+                assert_eq!(args.get("path").unwrap().as_str().unwrap(), "src/main.rs");
+                assert_eq!(say.as_deref(), Some("Reading main.rs."));
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_decision_tool_with_prose_prefix() {
+        let input = r#"Let me check: {"tool":"grep","args":{"pattern":"fn main","path":"src"}}"#;
+        match parse_decision(input) {
+            Decision::Tool { tool, .. } => {
+                assert_eq!(tool.name, "grep");
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_decision_unknown_tool_returns_answer_with_descriptions() {
+        let input = r#"{"tool":"writee","args":{}}"#;
+        match parse_decision(input) {
+            Decision::Answer(text) => {
+                assert!(text.contains("Unknown tool \"writee\""));
+                assert!(text.contains("Available tools:"));
+                assert!(text.contains("read"));
+                assert!(text.contains("write"));
+                assert!(text.contains("grep"));
+            }
+            other => panic!("expected Answer with error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_decision_tool_defaults_empty_args() {
+        let input = r#"{"tool":"read"}"#;
+        match parse_decision(input) {
+            Decision::Tool { tool, args, .. } => {
+                assert_eq!(tool.name, "read");
+                // Should default to empty object
+                assert!(args.is_object());
+                assert!(args.as_object().unwrap().is_empty());
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_render_tool_call() {
+        let events = vec![
+            TranscriptEvent::ToolCall {
+                name: "read",
+                args: serde_json::json!({"path": "src/main.rs"}),
+            },
+            TranscriptEvent::ToolResult {
+                name: "read",
+                output: "fn main() {}".to_string(),
+                error: false,
+            },
+        ];
+        let rendered = render_transcript(&events);
+        assert!(rendered.contains("> read(\"src/main.rs\")"));
+        assert!(rendered.contains("fn main() {}"));
+    }
+
+    #[test]
+    fn transcript_render_tool_error() {
+        let events = vec![TranscriptEvent::ToolResult {
+            name: "read",
+            output: "file not found".to_string(),
+            error: true,
+        }];
+        let rendered = render_transcript(&events);
+        assert!(rendered.contains("[error] file not found"));
+    }
+
+    #[test]
+    fn transcript_render_shell() {
+        let events = vec![TranscriptEvent::Shell {
+            cmd: "cargo check".to_string(),
+            exit_code: 0,
+            output: "Finished dev profile".to_string(),
+        }];
+        let rendered = render_transcript(&events);
+        assert!(rendered.contains("$ cargo check"));
+        assert!(rendered.contains("(exit 0)"));
+        assert!(rendered.contains("Finished dev profile"));
+    }
+
+    #[test]
+    fn tool_list_with_descriptions_includes_all() {
+        let list = tool_list_with_descriptions();
+        assert!(list.contains("read"));
+        assert!(list.contains("write"));
+        assert!(list.contains("edit"));
+        assert!(list.contains("glob"));
+        assert!(list.contains("grep"));
     }
 }

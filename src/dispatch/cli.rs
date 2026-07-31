@@ -16,6 +16,23 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Cmd {
+    /// First-run setup: check system, install recommended model.
+    Init {
+        /// Skip automatic model download.
+        #[arg(long)]
+        no_download: bool,
+    },
+    /// Manage local models (install, list, remove, info).
+    Model {
+        #[command(subcommand)]
+        action: ModelAction,
+    },
+    /// Show detailed version information.
+    Version,
+    /// Run system diagnostics.
+    Doctor,
+    /// Demo mode: run tool execution without an LLM.
+    Demo,
     /// Run a command through RTK and stream normalized events.
     Run {
         /// Force the LLM insight on for this run (overrides the configured compression mode).
@@ -134,7 +151,33 @@ pub enum GraphAction {
     },
 }
 
+#[derive(Subcommand)]
+pub enum ModelAction {
+    /// Install a model by ID, or 'latest' for the recommended model.
+    Install {
+        /// Model ID (e.g. qwen2.5-0.5b) or 'latest'.
+        model_id: Option<String>,
+    },
+    /// List available and installed models.
+    List,
+    /// Remove an installed model.
+    Remove {
+        /// Model ID to remove.
+        model_id: String,
+    },
+    /// Show details about a model.
+    Info {
+        /// Model ID (e.g. qwen2.5-0.5b) or 'latest'.
+        model_id: Option<String>,
+    },
+}
+
 pub const SUBCOMMANDS: &[&str] = &[
+    "init",
+    "model",
+    "version",
+    "doctor",
+    "demo",
     "run",
     "script",
     "setup",

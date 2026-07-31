@@ -53,6 +53,46 @@ After the normal lines, one extra event the agent can read instead of the full l
 The LLM call is best-effort: a network or parse failure prints `(llm skipped: …)` and never changes
 the exit code. Requires a key from [Setup](setup).
 
+## First-time setup
+
+```bash
+cotrex init             # auto-download model and configure
+cotrex --no-download    # init without downloading the model
+```
+
+`cotrex init` is idempotent — safe to run multiple times. It checks for existing configuration
+and models, only downloading what's missing.
+
+## Model management
+
+```bash
+cotrex model list           # list available models
+cotrex model install qwen2.5-0.5b  # download and install a model
+cotrex model remove qwen2.5-0.5b   # remove a model
+cotrex model info qwen2.5-0.5b     # show model details
+```
+
+Models are stored in `~/.cotrex/models/`. Each model includes a GGUF file and metadata.
+
+## System diagnostics
+
+```bash
+cotrex doctor              # check system health and dependencies
+cotrex version             # show version info
+```
+
+`cotrex doctor` reports system status without failing — missing models are warnings, not errors.
+
+## Agent demo
+
+```bash
+echo '{"tool":"read","path":"Cargo.toml"}' | cotrex demo    # run tool execution demo
+```
+
+The demo command exercises the full tool execution pipeline without an LLM. It accepts raw JSON
+on stdin, resolves tools, validates arguments, and executes built-in tools (read, write, edit,
+glob, grep).
+
 ## Prompts & categories
 
 A single quoted arg is a *prompt*, not a command. **For a task, the model gathers with shell commands

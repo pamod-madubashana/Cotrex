@@ -71,6 +71,26 @@ fn is_passthrough(first: &str) -> bool {
 /// `run_intent`, or exits directly for self-contained subcommands.
 pub fn dispatch_cmd(cmd: Cmd) -> Option<Intent> {
     match cmd {
+        Cmd::Init { no_download } => {
+            crate::commands::init::run(no_download);
+            exit(0);
+        }
+        Cmd::Model { action } => {
+            crate::commands::model::run(&action);
+            exit(0);
+        }
+        Cmd::Version => {
+            crate::commands::version::run();
+            exit(0);
+        }
+        Cmd::Doctor => {
+            crate::commands::doctor::run();
+            exit(0);
+        }
+        Cmd::Demo => {
+            crate::commands::demo::run();
+            exit(0);
+        }
         Cmd::Run { llm, command } => {
             let mut i = Intent::from_command(command);
             i.llm = llm;

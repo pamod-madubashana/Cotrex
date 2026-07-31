@@ -10,7 +10,7 @@ cotrex_ai_kernel = { package = "kernel", path = "cotrex-ai/kernel" }
 
 [package]
 name = "cotrex"
-version = "2.8.1"
+version = "3.0.0"
 edition = "2021"
 authors = ["Pamod Madubashana"]
 description = "CLI toolkit for optimizing AI agent performance and reducing token usage."
@@ -31,7 +31,7 @@ name = "cotrex"
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["local-model"]
 local-model = ["dep:llama-cpp-provider"]
 
 [dependencies]
