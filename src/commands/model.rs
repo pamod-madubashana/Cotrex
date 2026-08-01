@@ -243,21 +243,13 @@ pub fn run(action: &ModelAction) {
                         .iter()
                         .map(|m| {
                             let size_str = format_size(m.size);
-                            let ram_str = m
-                                .ram_gb
-                                .map(|r| format!("{r} GB RAM"))
-                                .unwrap_or_default();
-                            let desc = m.description.as_deref().unwrap_or("");
                             let stem = m.filename.replace(".gguf", "");
                             let tick = if installed.iter().any(|i| i == &stem) {
                                 " \u{2713}"
                             } else {
                                 ""
                             };
-                            format!(
-                                "{} ({}, {}){} - {}",
-                                m.id, size_str, ram_str, tick, desc
-                            )
+                            format!("{} ({}){}", m.id, size_str, tick)
                         })
                         .collect();
                     match inquire::Select::new("Select a model to install:", choices).prompt() {
@@ -296,69 +288,16 @@ pub fn run(action: &ModelAction) {
                 return;
             }
 
-            let tier_order = ["Fast", "Balanced", "Powerful", "High-end", "Enthusiast"];
-            let tier_icons: &[(&str, &str)] = &[
-                ("Fast", "⚡"),
-                ("Balanced", "⭐"),
-                ("Powerful", "🚀"),
-                ("High-end", "💪"),
-                ("Enthusiast", "🧠"),
-            ];
-
             println!("Available models:\n");
 
-            for tier_name in &tier_order {
-                let tier_models: Vec<_> = registry
-                    .models
-                    .iter()
-                    .filter(|m| m.tier.as_deref() == Some(tier_name))
-                    .collect();
-                if tier_models.is_empty() {
-                    continue;
-                }
-
-                let icon = tier_icons
-                    .iter()
-                    .find(|(t, _)| t == tier_name)
-                    .map(|(_, i)| *i)
-                    .unwrap_or(" ");
-                println!("  {icon} {tier_name}");
-
-                for m in &tier_models {
-                    let stem = m.filename.replace(".gguf", "");
-                    let is_installed = installed.iter().any(|i| i == &stem);
-                    let marker = if is_installed { "✓" } else { " " };
-                    let size_str = format_size(m.size);
-                    let ram_str = m
-                        .ram_gb
-                        .map(|r| format!("{r} GB RAM"))
-                        .unwrap_or_default();
-                    let desc = m.description.as_deref().unwrap_or("");
-                    println!(
-                        "    [{marker}] {:<16} {:>8}  {:>8}  {}",
-                        m.id, size_str, ram_str, desc
-                    );
-                }
-                println!();
+            for m in &registry.models {
+                let stem = m.filename.replace(".gguf", "");
+                let is_installed = installed.iter().any(|i| i == &stem);
+                let marker = if is_installed { "✓" } else { " " };
+                let size_str = format_size(m.size);
+                println!("  [{marker}] {:<20} {}", m.id, size_str);
             }
-
-            // Models without a tier (legacy or custom)
-            let ungrouped: Vec<_> = registry
-                .models
-                .iter()
-                .filter(|m| m.tier.is_none())
-                .collect();
-            if !ungrouped.is_empty() {
-                println!("  Other");
-                for m in &ungrouped {
-                    let stem = m.filename.replace(".gguf", "");
-                    let is_installed = installed.iter().any(|i| i == &stem);
-                    let marker = if is_installed { "✓" } else { " " };
-                    let size_str = format_size(m.size);
-                    println!("    [{marker}] {:<20} {}", m.id, size_str);
-                }
-                println!();
-            }
+            println!();
 
             if !installed.is_empty() {
                 println!("Installed:");
@@ -402,17 +341,6 @@ pub fn run(action: &ModelAction) {
                     let def = registry.find(id);
 
                     println!("Model: {id}");
-                    if let Some(d) = def {
-                        if let Some(ref tier) = d.tier {
-                            println!("  Tier:       {tier}");
-                        }
-                        if let Some(ram) = d.ram_gb {
-                            println!("  RAM:        {ram} GB minimum");
-                        }
-                        if let Some(ref desc) = d.description {
-                            println!("  About:      {desc}");
-                        }
-                    }
                     println!("  File:       {filename}");
                     println!("  Size:       {}", format_size(size));
                     if is_installed {

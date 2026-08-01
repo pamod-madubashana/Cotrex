@@ -504,6 +504,15 @@ git); never PowerShell or cmd syntax."
                 print_answer(&text, mode);
                 return Ok(0);
             }
+            Decision::Retry(error) => {
+                // Unknown tool — feed error back so the model can correct itself.
+                transcript_events.push(TranscriptEvent::ToolResult {
+                    name: "tool",
+                    output: error,
+                    error: true,
+                });
+                continue;
+            }
             Decision::Tool { tool, args, say } => {
                 say_step(say.as_deref(), mode);
                 let tool_key = format!("tool:{}", tool.name);
@@ -708,6 +717,14 @@ pub fn fulfill_and_capture(
                 }
                 return Ok(text);
             }
+            Decision::Retry(error) => {
+                transcript_events.push(TranscriptEvent::ToolResult {
+                    name: "tool",
+                    output: error,
+                    error: true,
+                });
+                continue;
+            }
             Decision::Tool { tool, args, say: _ } => {
                 let call_sig = format!(
                     "tool:{}:{}",
@@ -867,6 +884,8 @@ pub enum Decision {
         say: Option<String>,
     },
     Answer(String),
+    /// Unknown tool name — feed error back and let the model retry.
+    Retry(String),
 }
 
 /// Structured transcript events for tool execution.
@@ -981,8 +1000,8 @@ pub fn parse_decision(content: &str) -> Decision {
                     let args = v.get("args").cloned().unwrap_or(serde_json::json!({}));
                     return Decision::Tool { tool, args, say };
                 }
-                // Unknown tool name — fall through to answer with error context.
-                return Decision::Answer(format!(
+                // Unknown tool name — feed error back so the model can retry.
+                return Decision::Retry(format!(
                     "Unknown tool \"{name}\"\n\nAvailable tools:\n{}",
                     tool_list_with_descriptions()
                 ));
@@ -1379,19 +1398,16 @@ impl Spinner {
         let label = label.to_string();
 
         let handle = thread::spawn(move || {
-            let mut err = std::io::stderr();
-            let _ = write!(err, "\x1b[?25l");
-            let _ = err.flush();
+            // Use console_write for all visible output so it bypasses fd 2
+            // (StderrSuppress redirects fd 2 to NUL during inference).
+            crate::llm::console_write(b"\x1b[?25l");
 
             let mut i = 0;
             while !flag.load(Ordering::Relaxed) {
                 let start = std::time::Instant::now();
-                let _ = write!(
-                    err,
-                    "\r{SAY_COLOR}{}\x1b[0m {label}...",
-                    SPIN_FRAMES[i % SPIN_FRAMES.len()]
+                crate::llm::console_write(
+                    format!("\r{SAY_COLOR}{}\x1b[0m {label}...", SPIN_FRAMES[i % SPIN_FRAMES.len()]).as_bytes(),
                 );
-                let _ = err.flush();
                 i += 1;
 
                 while !flag.load(Ordering::Relaxed) && start.elapsed() < SPIN_FRAME {
@@ -1401,12 +1417,11 @@ impl Spinner {
 
             // Show green checkmark on completion
             if done_flag.load(Ordering::Relaxed) {
-                let _ = write!(err, "\r{GREEN}✓{RESET} {label}\n");
+                crate::llm::console_write(format!("\r{GREEN}✓{RESET} {label}\n").as_bytes());
             } else {
-                let _ = write!(err, "\r\x1b[K");
+                crate::llm::console_write(b"\r\x1b[K");
             }
-            let _ = write!(err, "\x1b[?25h");
-            let _ = err.flush();
+            crate::llm::console_write(b"\x1b[?25h");
         });
 
         Spinner {
@@ -1432,9 +1447,8 @@ impl Drop for Spinner {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
-        let mut err = std::io::stderr();
-        let _ = write!(err, "\x1b[?25h");
-        let _ = err.flush();
+        // Use console_write to restore cursor (bypasses fd 2 suppression).
+        crate::llm::console_write(b"\x1b[?25h");
     }
 }
 
@@ -1626,17 +1640,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_decision_unknown_tool_returns_answer_with_descriptions() {
+    fn parse_decision_unknown_tool_returns_retry_with_descriptions() {
         let input = r#"{"tool":"writee","args":{}}"#;
         match parse_decision(input) {
-            Decision::Answer(text) => {
+            Decision::Retry(text) => {
                 assert!(text.contains("Unknown tool \"writee\""));
                 assert!(text.contains("Available tools:"));
                 assert!(text.contains("read"));
                 assert!(text.contains("write"));
                 assert!(text.contains("grep"));
             }
-            other => panic!("expected Answer with error, got {other:?}"),
+            other => panic!("expected Retry with error, got {other:?}"),
         }
     }
 

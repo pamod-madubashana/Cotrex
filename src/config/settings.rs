@@ -161,12 +161,7 @@ pub fn run_setup() -> Result<(), String> {
             .models
             .iter()
             .map(|m| {
-                let ram_str = m
-                    .ram_gb
-                    .map(|r| format!("{r} GB RAM"))
-                    .unwrap_or_default();
-                let desc = m.description.as_deref().unwrap_or("");
-                format!("{} ({}, {}) - {}", m.id, format_size_display(m.size), ram_str, desc)
+                format!("{} ({})", m.id, format_size_display(m.size))
             })
             .collect();
         if opts.is_empty() {
@@ -208,6 +203,7 @@ mod tests {
             rtk_verbosity: "ultra-compact".into(),
             graph_auto: true,
             agent: "codex".into(),
+            model: String::new(),
         };
         let s = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();

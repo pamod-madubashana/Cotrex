@@ -14,108 +14,67 @@ use crate::script;
 use clap::{CommandFactory, Parser};
 
 /// Top-level entry point: parse args, detect mode, route to the right handler.
+///
+/// Routing priority:
+///   1. `-m` / `--model` → machine prompt (deterministic, no spinner/streaming)
+///   2. `-c` / `--cmd` / `--run` → command execution through RTK
+///   3. Built-in clap subcommands (model, doctor, init, …)
+///   4. Everything else → human prompt (spinner, streaming, markdown)
 pub fn run() {
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let model_mode = matches!(
-        args.get(1).map(String::as_str),
-        Some("-m") | Some("--model")
-    );
-    let rest: &[String] = if model_mode { &args[2..] } else { &args[1..] };
-    let mode = if model_mode {
-        agent::prompt::Mode::Model
-    } else {
-        agent::prompt::Mode::User
-    };
-
-    if let Some(first) = rest.first() {
-        if first == "assistant" {
-            run_assistant(rest[1..].join(" ").trim(), mode);
-        }
-        if is_passthrough(first) {
-            if rest.len() >= 2 {
-                // Multiple bare args → command (e.g. `cotrex git status`).
-                run_intent(Intent::from_command(rest.join(" ")));
-            } else if model_mode {
-                // -m flag present → single word is a prompt (e.g. cotrex -m "hi").
-                dispatch_one(&rest[0], mode);
-            } else if let Some(suggestion) = suggest_subcommand(first) {
-                eprintln!("cotrex: unknown command '{first}'. Did you mean '{suggestion}'?");
-                exit(2);
-            } else {
-                eprintln!("cotrex: '{first}' is not a command. Use quotes for a prompt: cotrex -m \"{first}\"");
-                exit(2);
-            }
-            return;
-        }
-        if model_mode {
-            eprintln!("cotrex: -m takes a prompt, not '{first}'");
+    // 1. Machine mode
+    let (model_mode, rest) = strip_flag(&args, &["-m", "--model"]);
+    if model_mode {
+        if rest.is_empty() {
+            eprintln!("cotrex: -m needs a prompt, e.g. cotrex -m \"list rust projects\"");
             exit(2);
         }
-    } else if model_mode {
-        eprintln!("cotrex: -m needs a prompt or role, e.g. cotrex -m \"list rust projects\"");
-        exit(2);
+        dispatch_one(&rest.join(" "), agent::prompt::Mode::Model);
+        return;
     }
 
-    let cli = Cli::parse();
-
-    let intent = match cli.cmd {
-        Some(cmd) => match dispatch_cmd(cmd) {
-            Some(intent) => intent,
-            None => return,
-        },
-        None => read_stdin_intent(),
-    };
-
-    run_intent(intent);
-}
-
-fn is_passthrough(first: &str) -> bool {
-    !first.starts_with('-') && !SUBCOMMANDS.contains(&first)
-}
-
-/// Check if a bare argument looks like a misspelled subcommand (edit distance ≤ 2).
-/// Returns the closest subcommand name, or `None` if nothing is close enough.
-fn suggest_subcommand(input: &str) -> Option<&'static str> {
-    let mut best: Option<(&'static str, usize)> = None;
-    for &sub in SUBCOMMANDS {
-        let d = edit_distance(input, sub);
-        if d <= 1 {
-            match best {
-                Some((_, bd)) if d < bd => best = Some((sub, d)),
-                None => best = Some((sub, d)),
-                _ => {}
-            }
+    // 2. Command mode
+    let (cmd_mode, rest) = strip_flag(&rest, &["-c", "--cmd", "--run"]);
+    if cmd_mode {
+        if rest.is_empty() {
+            eprintln!("cotrex: -c needs a command, e.g. cotrex -c git status");
+            exit(2);
         }
+        run_intent(Intent::from_command(rest.join(" ")));
+        return;
     }
-    best.map(|(name, _)| name)
+
+    // 3. Built-in subcommands, flags, or empty (help / stdin)
+    //    Let Clap own all errors for known subcommands (typos, bad flags, missing args).
+    if rest.is_empty() || is_builtin(&rest[0]) || rest[0].starts_with('-') {
+        let cli = Cli::parse();
+        let intent = match cli.cmd {
+            Some(cmd) => match dispatch_cmd(cmd) {
+                Some(intent) => intent,
+                None => return,
+            },
+            None => read_stdin_intent(),
+        };
+        run_intent(intent);
+        return;
+    }
+
+    // 4. Unknown top-level → human prompt
+    dispatch_one(&rest.join(" "), agent::prompt::Mode::User);
 }
 
-/// Optimal string alignment distance — like Levenshtein but counts adjacent transpositions as
-/// a single edit.  This catches typos like "mpc" → "mcp" (distance 1, not 2).
-fn edit_distance(a: &str, b: &str) -> usize {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    let (m, n) = (a.len(), b.len());
-    // Full matrix needed for transposition look-back.
-    let mut d = vec![vec![0usize; n + 1]; m + 1];
-    for i in 0..=m {
-        d[i][0] = i;
+/// Strip a flag from the front of args. Returns `(found, remaining)`.
+fn strip_flag<'a>(args: &'a [String], flags: &[&str]) -> (bool, &'a [String]) {
+    match args.first() {
+        Some(first) if flags.contains(&first.as_str()) => (true, &args[1..]),
+        _ => (false, args),
     }
-    for j in 0..=n {
-        d[0][j] = j;
-    }
-    for i in 1..=m {
-        for j in 1..=n {
-            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            d[i][j] = (d[i - 1][j] + 1)
-                .min(d[i][j - 1] + 1)
-                .min(d[i - 1][j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                d[i][j] = d[i][j].min(d[i - 2][j - 2] + cost);
-            }
-        }
-    }
-    d[m][n]
+}
+
+/// Check if a token is a known built-in subcommand.
+fn is_builtin(first: &str) -> bool {
+    SUBCOMMANDS.contains(&first)
 }
 
 /// Dispatch a parsed CLI subcommand. Returns the intent for commands that fall through to
@@ -600,28 +559,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn passthrough_routes_commands_not_subcommands() {
-        assert!(is_passthrough("git"));
-        assert!(is_passthrough("ls"));
-        assert!(!is_passthrough("run"));
-        assert!(!is_passthrough("setup"));
-        assert!(!is_passthrough("--help"));
-        assert!(!is_passthrough("-V"));
+    fn strip_flag_detects_model() {
+        let args: Vec<String> = vec!["-m".into(), "hello".into()];
+        let (found, rest) = strip_flag(&args, &["-m", "--model"]);
+        assert!(found);
+        assert_eq!(rest, &["hello"]);
     }
 
     #[test]
-    fn suggest_catches_typos() {
-        assert_eq!(suggest_subcommand("mpc"), Some("mcp"));    // transposition
-        assert_eq!(suggest_subcommand("mc"), Some("mcp"));     // deletion
-        assert_eq!(suggest_subcommand("rn"), Some("run"));     // deletion
-        assert_eq!(suggest_subcommand("setu"), Some("setup")); // deletion
+    fn strip_flag_detects_cmd() {
+        let args: Vec<String> = vec!["-c".into(), "git".into(), "status".into()];
+        let (found, rest) = strip_flag(&args, &["-c", "--cmd", "--run"]);
+        assert!(found);
+        assert_eq!(rest, &["git", "status"]);
     }
 
     #[test]
-    fn suggest_ignores_unrelated_words() {
-        assert_eq!(suggest_subcommand("git"), None);
-        assert_eq!(suggest_subcommand("cargo"), None);
-        assert_eq!(suggest_subcommand("hello"), None);
-        assert_eq!(suggest_subcommand("hi"), None);
+    fn strip_flag_missing() {
+        let args: Vec<String> = vec!["hello".into()];
+        let (found, rest) = strip_flag(&args, &["-m", "--model"]);
+        assert!(!found);
+        assert_eq!(rest, &["hello"]);
+    }
+
+    #[test]
+    fn strip_flag_empty() {
+        let args: Vec<String> = vec![];
+        let (found, rest) = strip_flag(&args, &["-m", "--model"]);
+        assert!(!found);
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn is_builtin_recognizes_subcommands() {
+        assert!(is_builtin("model"));
+        assert!(is_builtin("doctor"));
+        assert!(is_builtin("init"));
+        assert!(is_builtin("run"));
+        assert!(is_builtin("mcp"));
+        assert!(is_builtin("version"));
+    }
+
+    #[test]
+    fn is_builtin_rejects_non_subcommands() {
+        assert!(!is_builtin("git"));
+        assert!(!is_builtin("cargo"));
+        assert!(!is_builtin("hello"));
+        assert!(!is_builtin("--help"));
     }
 }

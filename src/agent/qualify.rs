@@ -148,6 +148,7 @@ fn qualification_tests() -> Vec<QualTest> {
                     Err(format!("expected tool call, got shell command: {cmd}"))
                 }
                 Decision::Answer(a) => Err(format!("expected tool call, got answer: {a}")),
+                Decision::Retry(e) => Err(format!("unknown tool: {e}")),
             },
         },
         QualTest {
@@ -174,6 +175,7 @@ fn qualification_tests() -> Vec<QualTest> {
                     Err(format!("expected tool call, got shell command: {cmd}"))
                 }
                 Decision::Answer(a) => Err(format!("expected tool call, got answer: {a}")),
+                Decision::Retry(e) => Err(format!("unknown tool: {e}")),
             },
         },
         QualTest {
@@ -185,6 +187,7 @@ fn qualification_tests() -> Vec<QualTest> {
                 // (the actual multi-step loop is tested by the runner)
                 match d {
                     Decision::Tool { .. } | Decision::Run { .. } => Ok(()),
+                    Decision::Retry(e) => Err(format!("unknown tool: {e}")),
                     Decision::Answer(a) => {
                         if a.to_lowercase().contains("current working directory")
                             || a.to_lowercase().contains("hi!")
@@ -398,6 +401,13 @@ fn run_multi_step_test(test: &QualTest, model_id: &str) -> TestResult {
                         });
                     }
                 }
+            }
+            Decision::Retry(error) => {
+                // Unknown tool — feed error back as tool result for next iteration
+                transcript.push(TranscriptEntry {
+                    role: "tool_result".into(),
+                    content: format!("[error] {error}"),
+                });
             }
             Decision::Run { cmd, .. } => {
                 let call_sig = format!("run:{cmd}");

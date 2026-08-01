@@ -313,9 +313,17 @@ mod console {
             dwflagsandattributes: u32,
             htemplatefile: isize,
         ) -> isize;
+        #[allow(dead_code)]
         fn WriteConsoleA(
             hconsoleoutput: isize,
             lpbuffer: *const u8,
+            nnumberofcharstowrite: u32,
+            lpnumberofcharswritten: *mut u32,
+            lpreserved: *const std::ffi::c_void,
+        ) -> i32;
+        fn WriteConsoleW(
+            hconsoleoutput: isize,
+            lpbuffer: *const u16,
             nnumberofcharstowrite: u32,
             lpnumberofcharswritten: *mut u32,
             lpreserved: *const std::ffi::c_void,
@@ -360,33 +368,38 @@ mod console {
         if handle == -1isize { None } else { Some(handle) }
     }
 
-    /// Write bytes to the console.  Uses `WriteConsoleA` when available (real
-    /// console window) and falls back to `WriteFile` for pipes / redirected
-    /// output.  In both cases the handle bypasses fd 2 so `StderrSuppress`
-    /// does not swallow our output.
+    /// Write bytes to the console.  Converts UTF-8 to UTF-16 and uses
+    /// `WriteConsoleW` so Unicode characters (braille spinner, etc.) render
+    /// correctly.  Falls back to `WriteFile` when the handle is a pipe.
     pub fn write(data: &[u8]) {
         if let Some(handle) = get_handle() {
+            // Convert UTF-8 bytes to UTF-16 for WriteConsoleW.
+            if let Ok(s) = std::str::from_utf8(data) {
+                let wide: Vec<u16> = s.encode_utf16().collect();
+                let mut written: u32 = 0;
+                let ok = unsafe {
+                    WriteConsoleW(
+                        handle,
+                        wide.as_ptr(),
+                        wide.len() as u32,
+                        &mut written,
+                        std::ptr::null(),
+                    )
+                };
+                if ok != 0 {
+                    return;
+                }
+            }
+            // Fallback: not a real console (pipe/redirect) — write raw bytes.
             let mut written: u32 = 0;
-            let ok = unsafe {
-                WriteConsoleA(
+            unsafe {
+                WriteFile(
                     handle,
                     data.as_ptr(),
                     data.len() as u32,
                     &mut written,
                     std::ptr::null(),
-                )
-            };
-            if ok == 0 {
-                // Not a console handle (pipe / redirect) — try WriteFile.
-                unsafe {
-                    WriteFile(
-                        handle,
-                        data.as_ptr(),
-                        data.len() as u32,
-                        &mut written,
-                        std::ptr::null(),
-                    );
-                }
+                );
             }
         }
     }
