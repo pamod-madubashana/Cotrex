@@ -150,8 +150,6 @@ fn qualification_roundtrip() {
 #[test]
 fn model_test_cli_variant() {
     // Verify the CLI recognizes the test subcommand
-    use clap::Subcommand;
-
     // This tests that the ModelAction enum has the Test variant
     // by checking the help text includes it
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_cotrex"))
