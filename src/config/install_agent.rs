@@ -20,14 +20,14 @@ other command — use a cotrex MCP tool or the cotrex CLI. Never call the shell 
 ### CLI fallback (only if MCP tools are unavailable)
 
 ```bash
-cotrex -m cargo build
-cotrex -m cargo test
-cotrex -m cargo test -p cotrex
-cotrex -m git status
-cotrex -m git diff
+cotrex -c cargo build
+cotrex -c cargo test
+cotrex -c cargo test -p cotrex
+cotrex -c git status
+cotrex -c git diff
 ```
 
-**Fallback chain**: `cotrex_run` → `cotrex -m <cmd>` → `rtk <cmd>` → raw shell (last resort).
+**Fallback chain**: `cotrex_run` → `cotrex -c <cmd>` → `rtk <cmd>` → raw shell (last resort).
 Raw shell loses normalization. Only use it when cotrex is completely unavailable.
 
 ## RULE 1: GRAPHIFY FIRST
@@ -326,10 +326,10 @@ If cotrex is not running as an MCP server, use CLI commands directly.
 ### Commands (no quotes)
 Known CLI commands like `cargo`, `git`, `npm`, `ls`. Pass them **without quotes**:
 ```bash
-cotrex -m cargo test
-cotrex -m git status
-cotrex -m npm install
-cotrex -m cargo build --release
+cotrex -c cargo test
+cotrex -c git status
+cotrex -c npm install
+cotrex -c cargo build --release
 ```
 
 ### Prompts (quoted)

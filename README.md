@@ -54,8 +54,9 @@ Run the install script for your platform:
 ### Run a command
 
 ```bash
-cotrex run "git status"
-cotrex git status        # same thing — the run subcommand is optional
+cotrex -c git status
+cotrex -c cargo build
+cotrex run "git status"        # alternative syntax
 ```
 
 ### Ask a question
@@ -63,6 +64,13 @@ cotrex git status        # same thing — the run subcommand is optional
 ```bash
 cotrex "what does the ? operator do?"    # answers your question
 cotrex "list all rust projects here"     # runs a search and prints results
+```
+
+### Machine prompt (deterministic)
+
+```bash
+cotrex -m "explain the architecture"
+cotrex -m graphify query "overview"
 ```
 
 ### First-time setup
