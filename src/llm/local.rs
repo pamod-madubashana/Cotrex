@@ -121,7 +121,7 @@ impl LocalInference {
         let request = cotrex_ai_runtime::InferenceRequest {
             prompt: cotrex_ai_runtime::Prompt::new(""),
             messages,
-            temperature: 0.0,
+            temperature: 0.7,
             max_tokens: 512,
             token_callback: None,
         };
@@ -180,7 +180,7 @@ impl LocalInference {
         let request = cotrex_ai_runtime::InferenceRequest {
             prompt: cotrex_ai_runtime::Prompt::new(""),
             messages,
-            temperature: 0.0,
+            temperature: 0.7,
             max_tokens: 512,
             token_callback,
         };

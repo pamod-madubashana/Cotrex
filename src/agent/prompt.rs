@@ -33,6 +33,15 @@ pub enum Mode {
     Model,
 }
 
+/// How `one_call()` should render its output during inference.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RenderMode {
+    /// Human mode: spinner + streaming decoded preview to stdout + final markdown.
+    Stream,
+    /// Model mode: silent inference, caller handles output.
+    FinalOnly,
+}
+
 // Each row binds a category to its header (system prompt). Add a row to add a category.
 const CATEGORIES: &[(&str, &str)] = &[
     (
@@ -475,6 +484,7 @@ git); never PowerShell or cmd syntax."
     let mut failed: Vec<(String, String)> = Vec::new(); // (cmd, error) pairs
     let perms = crate::agent::permission::Permissions::default();
     let limiter = OutputLimiter { max_lines: 500 };
+    let render = if mode == Mode::User { RenderMode::Stream } else { RenderMode::FinalOnly };
     for step in 0..max_steps {
         let transcript = render_transcript(&transcript_events);
         let user = if transcript.is_empty() {
@@ -487,7 +497,7 @@ git); never PowerShell or cmd syntax."
             };
             format!("Request: {task}\n\nCommands run so far:\n{transcript}{fix_hint}\nGather more if needed, else answer.")
         };
-        let (decision_text, infer_profile) = one_call(&system, &user, mode, false)?;
+        let (decision_text, infer_profile) = one_call(&system, &user, mode, render)?;
         if let Some(ref mut ap) = agent_profile {
             ap.steps.push(StepProfile::Inference {
                 label: format!("step-{} infer", step),
@@ -501,7 +511,10 @@ git); never PowerShell or cmd syntax."
                     ap.total = agent_start.elapsed();
                     ap.print();
                 }
-                print_answer(&text, mode);
+                // FinalOnly: print here. Stream: already printed during streaming.
+                if matches!(render, RenderMode::FinalOnly) {
+                    print_answer(&text, mode);
+                }
                 return Ok(0);
             }
             Decision::Retry(error) => {
@@ -647,7 +660,7 @@ git); never PowerShell or cmd syntax."
     let user = format!(
         "Request: {task}\n\nCommands run so far:\n{transcript}\nGive your final answer now as {{\"answer\":\"...\"}}."
     );
-    let (decision_text, infer_profile) = one_call(&system, &user, mode, false)?;
+    let (decision_text, infer_profile) = one_call(&system, &user, mode, render)?;
     if let Some(ref mut ap) = agent_profile {
         ap.steps.push(StepProfile::Inference {
             label: "forced-answer".into(),
@@ -660,7 +673,10 @@ git); never PowerShell or cmd syntax."
             ap.total = agent_start.elapsed();
             ap.print();
         }
-        print_answer(&text, mode);
+        // FinalOnly: print here. Stream: already printed during streaming.
+        if matches!(render, RenderMode::FinalOnly) {
+            print_answer(&text, mode);
+        }
     }
     Ok(0)
 }
@@ -701,7 +717,7 @@ pub fn fulfill_and_capture(
             };
             format!("Request: {task}\n\nCommands run so far:\n{transcript}{fix_hint}\nGather more if needed, else answer.")
         };
-        let (decision_text, infer_profile) = one_call(&system, &user, Mode::Model, false)?;
+        let (decision_text, infer_profile) = one_call(&system, &user, Mode::Model, RenderMode::FinalOnly)?;
         if let Some(ref mut ap) = agent_profile {
             ap.steps.push(StepProfile::Inference {
                 label: format!("step-{} infer", step),
@@ -814,7 +830,7 @@ pub fn fulfill_and_capture(
     let user = format!(
         "Request: {task}\n\nCommands run so far:\n{transcript}\nGive your final answer now as {{\"answer\":\"...\"}}."
     );
-    let (decision_text, infer_profile) = one_call(&system, &user, Mode::Model, false)?;
+    let (decision_text, infer_profile) = one_call(&system, &user, Mode::Model, RenderMode::FinalOnly)?;
     if let Some(ref mut ap) = agent_profile {
         ap.steps.push(StepProfile::Inference {
             label: "forced-answer".into(),
@@ -1018,6 +1034,11 @@ pub fn parse_decision(content: &str) -> Decision {
                 return Decision::Answer(ans.trim().to_string());
             }
         }
+    }
+    // JSON parsing failed — try the lenient extractor which handles
+    // malformed JSON (e.g. literal newlines in string values).
+    if let Some(text) = extract_answer_value(content) {
+        return Decision::Answer(text);
     }
     Decision::Answer(content.trim().to_string())
 }
@@ -1269,19 +1290,16 @@ fn trunc(s: &str, max: usize) -> String {
 
 /// Run one inference call through the local llama.cpp model.
 ///
-/// In **User mode** the function shows a spinner while the model loads, then
-/// streams the answer text to stderr in real-time as tokens arrive.  C-level
-/// llama.cpp context-construction noise may appear briefly during setup, but
-/// cursor save/restore (`\x1b[s` / `\x1b[u\x1b[J`) erases everything after
-/// generation finishes.  The full JSON is returned so `parse_decision` +
-/// `print_answer` can render the final markdown-formatted answer on stdout.
+/// In **User mode** the function streams the answer text to the console in
+/// real-time as tokens arrive.  The full JSON is returned so `parse_decision`
+/// can extract the result.
 ///
 /// In **Model mode** inference runs silently and the raw JSON is returned.
 fn one_call(
     system: &str,
     user: &str,
-    mode: Mode,
-    _live: bool,
+    _mode: Mode,
+    render: RenderMode,
 ) -> Result<(String, Option<cotrex_ai_runtime::InferProfile>), String> {
     let phrases = [
         "cooking",
@@ -1299,44 +1317,59 @@ fn one_call(
     let random_index = (nanos % phrases.len() as u128) as usize;
     let label = phrases[random_index];
 
-    if mode == Mode::User {
-        // Save cursor via console_write (bypasses fd 2, works even while the
-        // worker thread has StderrSuppress active).
-        crate::llm::console_write(b"\x1b[s");
+    match render {
+        RenderMode::Stream => {
+            let mut spinner = Some(Spinner::start(label));
+            let (handle, rx) = crate::llm::infer_local_stream(system, user);
 
-        let mut spinner = Some(Spinner::start(label));
-        let (handle, rx) = crate::llm::infer_local_stream(system, user);
+            let mut full_text = String::new();
+            let mut displayed: usize = 0;
+            let mut col: usize = 0;
 
-        let mut buffer = String::new();
-        let mut displayed: usize = 0;
+            while let Ok(token) = rx.recv() {
+                // First token → stop the spinner.
+                drop(spinner.take());
 
-        while let Ok(token) = rx.recv() {
-            // First token → stop the spinner.
-            drop(spinner.take());
+                full_text.push_str(&token);
 
-            buffer.push_str(&token);
-
-            // Incrementally extract the answer-text value from the growing
-            // JSON and stream it via console_write (bypasses fd 2 suppression).
-            if let Some(text) = extract_answer_value(&buffer) {
-                if text.len() > displayed {
-                    crate::llm::console_write(text[displayed..].as_bytes());
-                    displayed = text.len();
+                // Stream the answer preview to the console directly (bypasses
+                // StderrSuppress which redirects fd 2 to NUL during inference).
+                if let Some(text) = extract_answer_value(&full_text) {
+                    if let Some(partial) = text.get(displayed..) {
+                        if !partial.is_empty() {
+                            for ch in partial.chars() {
+                                if ch == '\n' {
+                                    col = 0;
+                                } else {
+                                    col += 1;
+                                }
+                            }
+                            crate::llm::console_write(partial.as_bytes());
+                            displayed = text.len();
+                        }
+                    }
                 }
             }
+
+            drop(spinner.take());
+
+            // Streaming preview stays as the final output.
+            // Just move cursor to a new line.
+            if col > 0 {
+                crate::llm::console_write(b"\n");
+            }
+
+            // Join for profile only — full_text already accumulated from tokens.
+            let (_, profile) = handle
+                .join()
+                .unwrap_or_else(|_| Err("inference thread panicked".into()))?;
+
+            Ok((full_text, profile))
         }
-
-        drop(spinner.take());
-
-        // Restore cursor + erase spinner, C noise, and streamed text.
-        crate::llm::console_write(b"\x1b[u\x1b[J");
-
-        let (full_text, profile) = handle.join().unwrap_or_else(|_| Err("inference thread panicked".into()))
-            ?;
-        Ok((full_text, profile))
-    } else {
-        // Model mode — silent, no output
-        crate::llm::infer_local_profiled(system, user)
+        RenderMode::FinalOnly => {
+            // Model mode — silent, no output
+            crate::llm::infer_local_profiled(system, user)
+        }
     }
 }
 
@@ -1400,7 +1433,8 @@ impl Spinner {
         let handle = thread::spawn(move || {
             // Use console_write for all visible output so it bypasses fd 2
             // (StderrSuppress redirects fd 2 to NUL during inference).
-            crate::llm::console_write(b"\x1b[?25l");
+            // Note: cursor hide/show is handled by the caller on stdout — not
+            // here on CONOUT$ — to avoid dual-handle cursor state corruption.
 
             let mut i = 0;
             while !flag.load(Ordering::Relaxed) {
@@ -1421,7 +1455,6 @@ impl Spinner {
             } else {
                 crate::llm::console_write(b"\r\x1b[K");
             }
-            crate::llm::console_write(b"\x1b[?25h");
         });
 
         Spinner {
@@ -1447,8 +1480,8 @@ impl Drop for Spinner {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
-        // Use console_write to restore cursor (bypasses fd 2 suppression).
-        crate::llm::console_write(b"\x1b[?25h");
+        // Note: cursor show is handled by the caller on stdout — not here on
+        // CONOUT$ — to avoid dual-handle cursor state corruption.
     }
 }
 
