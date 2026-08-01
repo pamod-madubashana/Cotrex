@@ -231,7 +231,49 @@ pub fn format_size(bytes: u64) -> String {
 pub fn run(action: &ModelAction) {
     match action {
         ModelAction::Install { model_id } => {
-            let id = model_id.as_deref().unwrap_or("latest");
+            let id = match model_id {
+                Some(ref explicit) => explicit.as_str(),
+                None => {
+                    // Interactive selection: show available models with RAM requirements
+                    let registry =
+                        cotrex_ai_runtime::model_manager::registry::ModelRegistry::built_in();
+                    let installed = list_installed().unwrap_or_default();
+                    let choices: Vec<String> = registry
+                        .models
+                        .iter()
+                        .map(|m| {
+                            let size_str = format_size(m.size);
+                            let ram_str = m
+                                .ram_gb
+                                .map(|r| format!("{r} GB RAM"))
+                                .unwrap_or_default();
+                            let desc = m.description.as_deref().unwrap_or("");
+                            let stem = m.filename.replace(".gguf", "");
+                            let tick = if installed.iter().any(|i| i == &stem) {
+                                " \u{2713}"
+                            } else {
+                                ""
+                            };
+                            format!(
+                                "{} ({}, {}){} - {}",
+                                m.id, size_str, ram_str, tick, desc
+                            )
+                        })
+                        .collect();
+                    match inquire::Select::new("Select a model to install:", choices).prompt() {
+                        Ok(choice) => choice
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or("latest")
+                            .to_string()
+                            .leak(),
+                        Err(_) => {
+                            eprintln!("cotrex: selection cancelled.");
+                            return;
+                        }
+                    }
+                }
+            };
             match resolve_model(id) {
                 Ok((filename, url, size)) => {
                     if let Err(e) = download_model(id, &filename, &url, size) {
@@ -254,16 +296,72 @@ pub fn run(action: &ModelAction) {
                 return;
             }
 
+            let tier_order = ["Fast", "Balanced", "Powerful", "High-end", "Enthusiast"];
+            let tier_icons: &[(&str, &str)] = &[
+                ("Fast", "⚡"),
+                ("Balanced", "⭐"),
+                ("Powerful", "🚀"),
+                ("High-end", "💪"),
+                ("Enthusiast", "🧠"),
+            ];
+
             println!("Available models:\n");
-            for m in &registry.models {
-                let is_installed = installed.iter().any(|i| i == &m.id);
-                let marker = if is_installed { "✓" } else { " " };
-                let size_str = format_size(m.size);
-                println!("  [{marker}] {:<20} {}", m.id, size_str);
+
+            for tier_name in &tier_order {
+                let tier_models: Vec<_> = registry
+                    .models
+                    .iter()
+                    .filter(|m| m.tier.as_deref() == Some(tier_name))
+                    .collect();
+                if tier_models.is_empty() {
+                    continue;
+                }
+
+                let icon = tier_icons
+                    .iter()
+                    .find(|(t, _)| t == tier_name)
+                    .map(|(_, i)| *i)
+                    .unwrap_or(" ");
+                println!("  {icon} {tier_name}");
+
+                for m in &tier_models {
+                    let stem = m.filename.replace(".gguf", "");
+                    let is_installed = installed.iter().any(|i| i == &stem);
+                    let marker = if is_installed { "✓" } else { " " };
+                    let size_str = format_size(m.size);
+                    let ram_str = m
+                        .ram_gb
+                        .map(|r| format!("{r} GB RAM"))
+                        .unwrap_or_default();
+                    let desc = m.description.as_deref().unwrap_or("");
+                    println!(
+                        "    [{marker}] {:<16} {:>8}  {:>8}  {}",
+                        m.id, size_str, ram_str, desc
+                    );
+                }
+                println!();
+            }
+
+            // Models without a tier (legacy or custom)
+            let ungrouped: Vec<_> = registry
+                .models
+                .iter()
+                .filter(|m| m.tier.is_none())
+                .collect();
+            if !ungrouped.is_empty() {
+                println!("  Other");
+                for m in &ungrouped {
+                    let stem = m.filename.replace(".gguf", "");
+                    let is_installed = installed.iter().any(|i| i == &stem);
+                    let marker = if is_installed { "✓" } else { " " };
+                    let size_str = format_size(m.size);
+                    println!("    [{marker}] {:<20} {}", m.id, size_str);
+                }
+                println!();
             }
 
             if !installed.is_empty() {
-                println!("\nInstalled:");
+                println!("Installed:");
                 for name in &installed {
                     let size = model_size(&format!("{name}.gguf"));
                     println!("  ✓ {} ({})", name, format_size(size));
@@ -299,7 +397,22 @@ pub fn run(action: &ModelAction) {
                         .any(|i| i == &filename.replace(".gguf", ""));
                     let actual_size = model_size(&filename);
 
+                    let registry =
+                        cotrex_ai_runtime::model_manager::registry::ModelRegistry::built_in();
+                    let def = registry.find(id);
+
                     println!("Model: {id}");
+                    if let Some(d) = def {
+                        if let Some(ref tier) = d.tier {
+                            println!("  Tier:       {tier}");
+                        }
+                        if let Some(ram) = d.ram_gb {
+                            println!("  RAM:        {ram} GB minimum");
+                        }
+                        if let Some(ref desc) = d.description {
+                            println!("  About:      {desc}");
+                        }
+                    }
                     println!("  File:       {filename}");
                     println!("  Size:       {}", format_size(size));
                     if is_installed {
@@ -312,9 +425,7 @@ pub fn run(action: &ModelAction) {
                     }
                     println!(
                         "  Registry:   {}",
-                        cotrex_ai_runtime::model_manager::registry::ModelRegistry::built_in()
-                            .find(id)
-                            .and_then(|m| m.context)
+                        def.and_then(|m| m.context)
                             .map(|c| format!("{c} context"))
                             .unwrap_or_else(|| "unknown".into())
                     );
@@ -327,6 +438,72 @@ pub fn run(action: &ModelAction) {
         }
         ModelAction::Test { model_id } => {
             run_model_test(model_id);
+        }
+        ModelAction::Use { model_id } => {
+            // Verify model exists in registry
+            let registry = cotrex_ai_runtime::model_manager::registry::ModelRegistry::built_in();
+            let model_def = match registry.find(model_id) {
+                Some(m) => m,
+                None => {
+                    eprintln!("cotrex: unknown model '{model_id}'. Run: cotrex model list");
+                    std::process::exit(1);
+                }
+            };
+
+            // Check if installed by matching the file stem
+            let installed = list_installed().unwrap_or_default();
+            let stem = model_def.filename.replace(".gguf", "");
+            if !installed.iter().any(|i| i == &stem) {
+                eprintln!("cotrex: model '{model_id}' is not installed.");
+                eprintln!("  Install it first: cotrex model install {model_id}");
+                std::process::exit(1);
+            }
+
+            let mut cfg = crate::config::load();
+            cfg.model = model_id.clone();
+            match crate::config::save(&cfg) {
+                Ok(path) => {
+                    println!("Active model set to: {model_id}");
+                    println!("  Config saved to: {}", path.display());
+                }
+                Err(e) => {
+                    eprintln!("cotrex: failed to save config: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        ModelAction::Show => {
+            let active = crate::config::settings::active_model();
+            let installed = list_installed().unwrap_or_default();
+
+            // Resolve active model to check install status
+            let registry = cotrex_ai_runtime::model_manager::registry::ModelRegistry::built_in();
+            let is_installed = registry
+                .find(&active)
+                .map(|m| {
+                    let stem = m.filename.replace(".gguf", "");
+                    installed.iter().any(|i| i == &stem)
+                })
+                .unwrap_or(false);
+
+            println!("Active model: {active}");
+            if is_installed {
+                println!("  Status: ✓ installed");
+            } else {
+                println!("  Status: ⚠ not installed — run: cotrex model install {active}");
+            }
+
+            let source = {
+                let cfg = crate::config::load();
+                if cfg.model.is_empty() {
+                    "default"
+                } else if std::env::var("COTREX_MODEL").is_ok() {
+                    "env (COTREX_MODEL)"
+                } else {
+                    "config.toml"
+                }
+            };
+            println!("  Source: {source}");
         }
     }
 }

@@ -17,6 +17,8 @@ pub struct Config {
     pub graph_auto: bool,
     /// graphify platform id for skill registration (e.g. claude, codex, cursor). Blank = auto-detect.
     pub agent: String,
+    /// Active model ID for local inference (e.g. qwen2.5-1.5b). Blank = default.
+    pub model: String,
 }
 
 impl Default for Config {
@@ -26,6 +28,7 @@ impl Default for Config {
             rtk_verbosity: "normal".into(),
             graph_auto: true,
             agent: String::new(),
+            model: String::new(),
         }
     }
 }
@@ -49,6 +52,9 @@ pub fn load() -> Config {
     if let Ok(v) = std::env::var("COTREX_GRAPH_AUTO") {
         cfg.graph_auto = v == "true" || v == "1" || v == "yes";
     }
+    if let Ok(v) = std::env::var("COTREX_MODEL") {
+        cfg.model = v;
+    }
     cfg
 }
 
@@ -60,6 +66,32 @@ pub fn save(cfg: &Config) -> Result<PathBuf, String> {
     let s = toml::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     std::fs::write(&path, s).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+/// Return the active model ID from config, or the default if unset.
+pub fn active_model() -> String {
+    let cfg = load();
+    if cfg.model.is_empty() {
+        "qwen3-8b".into()
+    } else {
+        cfg.model
+    }
+}
+
+/// Format bytes as human-readable size for display in setup prompts.
+fn format_size_display(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.0} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.0} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 /// Interactive setup. Pretty prompts via `inquire`; writes the config file.
@@ -123,11 +155,42 @@ pub fn run_setup() -> Result<(), String> {
         String::new()
     };
 
+    let model_options = {
+        let registry = cotrex_ai_runtime::model_manager::registry::ModelRegistry::built_in();
+        let mut opts: Vec<String> = registry
+            .models
+            .iter()
+            .map(|m| {
+                let ram_str = m
+                    .ram_gb
+                    .map(|r| format!("{r} GB RAM"))
+                    .unwrap_or_default();
+                let desc = m.description.as_deref().unwrap_or("");
+                format!("{} ({}, {}) - {}", m.id, format_size_display(m.size), ram_str, desc)
+            })
+            .collect();
+        if opts.is_empty() {
+            opts.push("qwen3-8b".into());
+        }
+        opts.push("(keep current)".into());
+        opts
+    };
+    let model_choice = Select::new("Active model for inference", model_options)
+        .prompt()
+        .map_err(|e| e.to_string())?;
+    let model = if model_choice == "(keep current)" {
+        load().model
+    } else {
+        // Extract just the model ID (first token)
+        model_choice.split_whitespace().next().unwrap_or("qwen3-8b").to_string()
+    };
+
     let cfg = Config {
         compression,
         rtk_verbosity,
         graph_auto,
         agent,
+        model,
     };
     let path = save(&cfg)?;
     eprintln!("Saved config to {}", path.display());
