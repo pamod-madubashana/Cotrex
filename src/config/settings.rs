@@ -19,6 +19,8 @@ pub struct Config {
     pub agent: String,
     /// Active model ID for local inference (e.g. qwen2.5-1.5b). Blank = default.
     pub model: String,
+    /// Sampling temperature for local inference (0.0 = deterministic, 1.0 = max randomness).
+    pub temperature: f64,
 }
 
 impl Default for Config {
@@ -29,6 +31,7 @@ impl Default for Config {
             graph_auto: true,
             agent: String::new(),
             model: String::new(),
+            temperature: 0.7,
         }
     }
 }
@@ -55,6 +58,11 @@ pub fn load() -> Config {
     if let Ok(v) = std::env::var("COTREX_MODEL") {
         cfg.model = v;
     }
+    if let Ok(v) = std::env::var("COTREX_TEMPERATURE") {
+        if let Ok(t) = v.parse::<f64>() {
+            cfg.temperature = t.clamp(0.0, 1.0);
+        }
+    }
     cfg
 }
 
@@ -76,6 +84,11 @@ pub fn active_model() -> String {
     } else {
         cfg.model
     }
+}
+
+/// Return the active sampling temperature from config.
+pub fn active_temperature() -> f64 {
+    load().temperature
 }
 
 /// Format bytes as human-readable size for display in setup prompts.
@@ -186,6 +199,7 @@ pub fn run_setup() -> Result<(), String> {
         graph_auto,
         agent,
         model,
+        temperature: load().temperature,
     };
     let path = save(&cfg)?;
     eprintln!("Saved config to {}", path.display());
@@ -204,6 +218,7 @@ mod tests {
             graph_auto: true,
             agent: "codex".into(),
             model: String::new(),
+            temperature: 0.7,
         };
         let s = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
