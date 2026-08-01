@@ -10,12 +10,12 @@ pub struct LocalModelFactory;
 
 impl ProviderFactory for LocalModelFactory {
     fn create(&self) -> Result<Arc<dyn CapabilityProvider + Send + Sync>, RuntimeError> {
-        let model_id = "qwen2.5-0.5b";
+        let model_id = crate::config::settings::active_model();
 
         let registry = load_registry().map_err(|e| RuntimeError::Model(e.to_string()))?;
         let resolver = ModelResolver::new(registry);
 
-        let model_path = resolver.resolve(model_id).map_err(|_| {
+        let model_path = resolver.resolve(&model_id).map_err(|_| {
             RuntimeError::Model(format!(
                 "model '{model_id}' not installed. Run: cotrex model install {model_id}"
             ))

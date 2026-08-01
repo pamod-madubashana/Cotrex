@@ -97,8 +97,7 @@ fn dispatch(method: &str, params: &Value, cfg: &Config) -> Result<Option<Value>,
 fn tools_list() -> Value {
     json!({"tools": [{
         "name": "run",
-        "description": "Run a shell command through RTK and return normalized, structured execution \
-    events (stdout/stderr lines with severity, a result with exit code, and an optional LLM insight).",
+        "description": "Run a command via RTK.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -109,9 +108,7 @@ fn tools_list() -> Value {
         },
     }, {
         "name": "set_agent",
-        "description": "Tell cotrex which AI agent you are so it can install the graphify code-map \
-    skill for the right platform. Call this once with your platform id if a run result says the agent \
-    is unknown.",
+        "description": "Set agent platform id.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -121,16 +118,14 @@ fn tools_list() -> Value {
         },
     }, {
         "name": "list_roles",
-        "description": "List all available roles (planner, coder, assistant, etc.) with their \
-    models and capabilities. Use this to see what roles are available before delegating tasks.",
+        "description": "List available roles.",
         "inputSchema": {
             "type": "object",
             "properties": {},
         },
     }, {
         "name": "delegate",
-        "description": "Delegate a task to a specific role. The role's model will run commands to \
-    gather info and return an analyzed answer. Use list_roles to see available roles.",
+        "description": "Delegate task to a role.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -141,7 +136,7 @@ fn tools_list() -> Value {
         },
     }, {
         "name": "plan",
-        "description": "Create an ordered plan for a task. Shorthand for delegate with the planner role.",
+        "description": "Plan a task.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -151,14 +146,14 @@ fn tools_list() -> Value {
         },
     }, {
         "name": "usage",
-        "description": "Show token usage statistics — how many tokens cotrex has processed across all runs.",
+        "description": "Show token usage.",
         "inputSchema": {
             "type": "object",
             "properties": {},
         },
     }, {
         "name": "graphify",
-        "description": "Query the graphify knowledge graph using BFS or DFS traversal. PREFERRED METHOD: use CLI instead - 'cotrex -m graphify query \"...\"'. This MCP tool exists for completeness but agents should read GRAPH_REPORT.md or use CLI commands.",
+        "description": "Query knowledge graph.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -170,7 +165,7 @@ fn tools_list() -> Value {
         },
     }, {
         "name": "graphify_path",
-        "description": "Find shortest path between two concepts. PREFERRED: use CLI 'cotrex -m graphify path \"A\" \"B\"'.",
+        "description": "Path between two nodes.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -181,7 +176,7 @@ fn tools_list() -> Value {
         },
     }, {
         "name": "graphify_explain",
-        "description": "Explain a node and its connections. PREFERRED: use CLI 'cotrex -m graphify explain \"Node\"'.",
+        "description": "Explain a graph node.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -191,7 +186,7 @@ fn tools_list() -> Value {
         },
     }, {
         "name": "graphify_add",
-        "description": "Fetch a URL (webpage, paper, tweet, PDF) and add it to the graphify corpus.",
+        "description": "Add URL to graph corpus.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -203,7 +198,7 @@ fn tools_list() -> Value {
         },
     }, {
         "name": "graphify_save_result",
-        "description": "Save a Q&A result back into the knowledge graph to improve future queries. Use this AFTER answering a user question to store the Q&A pair for future retrieval. Do NOT use this to ask questions - use 'graphify' tool for querying.",
+        "description": "Save Q&A to graph.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -216,7 +211,7 @@ fn tools_list() -> Value {
         },
     }, {
         "name": "graphify_export",
-        "description": "Export the graph in various formats (svg, graphml, neo4j).",
+        "description": "Export graph (svg/graphml/neo4j).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -226,7 +221,7 @@ fn tools_list() -> Value {
         },
     }, {
         "name": "cotrex_build_summary",
-        "description": "Summarize a build result (stdout/stderr) using local AI inference. Returns a concise explanation of what went wrong and how to fix it.",
+        "description": "Summarize build output with AI.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -240,7 +235,7 @@ fn tools_list() -> Value {
         },
     }, {
         "name": "cotrex_explain_rust",
-        "description": "Explain a Rust code snippet using local AI inference. Returns a concise explanation of what the code does, ownership patterns, or potential issues.",
+        "description": "Explain Rust code with AI.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -251,7 +246,7 @@ fn tools_list() -> Value {
         },
     }, {
         "name": "workspace_context",
-        "description": "Return current workspace context: branch, dirty state, modified files, file count, context hash. Requires orchestrator.",
+        "description": "Get workspace git context.",
         "inputSchema": {
             "type": "object",
             "properties": {},

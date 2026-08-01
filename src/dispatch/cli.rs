@@ -175,6 +175,13 @@ pub enum ModelAction {
         /// Model ID (e.g. qwen2.5-0.5b) or 'latest'.
         model_id: String,
     },
+    /// Set the active model for inference.
+    Use {
+        /// Model ID to activate (e.g. qwen2.5-1.5b).
+        model_id: String,
+    },
+    /// Show which model is currently active.
+    Show,
 }
 
 pub const SUBCOMMANDS: &[&str] = &[

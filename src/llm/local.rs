@@ -80,8 +80,8 @@ impl LocalInference {
             .map_err(|e| format!("failed to load registry: {e}"))?;
         let resolver = cotrex_ai_runtime::model_manager::ModelResolver::new(registry);
 
-        let model_id = "qwen2.5-1.5b";
-        let model_path = resolver.resolve(model_id).map_err(|e| format!("{e}"))?;
+        let model_id = crate::config::settings::active_model();
+        let model_path = resolver.resolve(&model_id).map_err(|e| format!("{e}"))?;
 
         let config = ResolvedConfig {
             model_path,
