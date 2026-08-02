@@ -303,6 +303,7 @@ fn pipeline_hash_changes_with_git_state() {
         git_branch: None,
         git_dirty: false,
         git_modified_count: 0,
+        tracked_files: 10,
     };
     let ctx_dirty = InferenceContext {
         recent_changes: vec![],
@@ -312,6 +313,7 @@ fn pipeline_hash_changes_with_git_state() {
         git_branch: Some("main".into()),
         git_dirty: true,
         git_modified_count: 3,
+        tracked_files: 10,
     };
 
     let h1 = ctx_clean.compute_hash();

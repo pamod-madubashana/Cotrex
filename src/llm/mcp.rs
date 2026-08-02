@@ -698,27 +698,40 @@ fn tool_workspace_context_with(_params: &Value, orch: Option<&Orchestrator>) -> 
         return tool_error("Orchestrator not initialized.".into());
     };
 
-    // Route through Orchestrator to prove the full context flow:
-    // MCP → Orchestrator → ContextSource → InferenceContext → PromptAssembler → Provider
-    let request = OrchestrationRequest {
-        capability: CapabilityRequest::BuildSummary(BuildSummaryRequest {
-            metadata: RequestMetadata::new(),
-            command: "workspace_context".into(),
-            exit_code: 0,
-            stdout: String::new(),
-            stderr: String::new(),
-            prompt: "Return workspace context".into(),
-            temperature: 0.0,
-            max_tokens: 0,
-        }),
-        context: None,
-    };
+    // Get context directly without LLM inference - this is a fast, synchronous operation
+    match orch.context() {
+        Ok(ctx) => {
+            let status = match ctx.workspace_status {
+                cotrex_ai_runtime::context::WorkspaceStatus::Clean => "clean",
+                cotrex_ai_runtime::context::WorkspaceStatus::Modified => "modified",
+                cotrex_ai_runtime::context::WorkspaceStatus::Failed => "failed",
+                cotrex_ai_runtime::context::WorkspaceStatus::Unknown => "unknown",
+            };
 
-    match orch.execute(request) {
-        Ok(resp) => json!({
-            "content": [{"type": "text", "text": resp.text().to_string()}],
-            "isError": false,
-        }),
+            let mut text = format!("Workspace Status: {}\n", status);
+            text.push_str(&format!(
+                "File Count: {} (kernel) / {} (git)\n",
+                ctx.file_count, ctx.tracked_files
+            ));
+            text.push_str(&format!(
+                "Git Branch: {}\n",
+                ctx.git_branch.unwrap_or_else(|| "detached".into())
+            ));
+            text.push_str(&format!("Git Dirty: {}\n", ctx.git_dirty));
+            text.push_str(&format!("Modified Files: {}\n", ctx.git_modified_count));
+
+            if !ctx.recent_changes.is_empty() {
+                text.push_str("Recent Changes:\n");
+                for change in &ctx.recent_changes {
+                    text.push_str(&format!("  - {}\n", change));
+                }
+            }
+
+            json!({
+                "content": [{"type": "text", "text": text}],
+                "isError": false,
+            })
+        }
         Err(e) => tool_error(e.to_string()),
     }
 }
