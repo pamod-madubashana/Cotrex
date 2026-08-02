@@ -55,7 +55,14 @@ impl OutputLimiter {
 }
 
 /// Static registry of built-in tools. Zero allocation, deterministic startup.
-pub static BUILTINS: &[Tool] = &[READ_TOOL, WRITE_TOOL, EDIT_TOOL, GLOB_TOOL, GREP_TOOL];
+pub static BUILTINS: &[Tool] = &[
+    READ_TOOL,
+    WRITE_TOOL,
+    EDIT_TOOL,
+    GLOB_TOOL,
+    GREP_TOOL,
+    GRAPHIFY_REPORT_TOOL,
+];
 
 /// Resolve a tool name against the static registry.
 pub fn resolve(name: &str) -> Option<&'static Tool> {
@@ -246,6 +253,120 @@ static GREP_TOOL: Tool = Tool {
     },
 };
 
+// ── Graphify tools ──────────────────────────────────────────────────────────
+
+/// Read the graphify code map overview (GRAPH_REPORT.md).
+static GRAPHIFY_REPORT_TOOL: Tool = Tool {
+    name: "graphify_report",
+    description: "Read the codebase knowledge graph overview (GRAPH_REPORT.md)",
+    parameters: r#"{"type":"object","properties":{},"required":[]}"#,
+    execute: |_ctx, _args| {
+        // Try GRAPH_REPORT.md first (fast path — pre-built overview)
+        let report_path = std::path::Path::new("graphify-out").join("GRAPH_REPORT.md");
+        if let Ok(content) = std::fs::read_to_string(&report_path) {
+            // Truncate to key sections to save context
+            let truncated = truncate_report(&content, 150);
+            return Ok(truncated);
+        }
+        // Fallback: try graph.json for basic stats
+        let graph_path = std::path::Path::new("graphify-out").join("graph.json");
+        if let Ok(content) = std::fs::read_to_string(&graph_path) {
+            let len = content.len();
+            return Ok(format!(
+                "graphify-out/graph.json exists ({len} bytes). \
+                 Run 'graphify update .' to regenerate GRAPH_REPORT.md."
+            ));
+        }
+        Err("No graphify graph found. Run 'graphify update .' to build the code map first.".into())
+    },
+};
+
+/// Truncate a graphify report to the most important sections.
+/// Keeps: Summary, God Nodes, Surprising Connections, Import Cycles, Communities overview.
+/// Skips: Community Hubs (verbose wiki links), verbose node lists per community.
+fn truncate_report(content: &str, _max_lines: usize) -> String {
+    let mut out = Vec::new();
+    let mut in_skip_section = false;
+    let mut in_communities_detail = false;
+    let mut communities_count = 0;
+
+    for line in content.lines() {
+        // Detect section headers
+        if line.starts_with("## ") || line.starts_with("### ") {
+            in_skip_section = false;
+            in_communities_detail = false;
+
+            let header = line.trim_start_matches('#').trim();
+
+            // Skip the Community Hubs section (huge list of wiki links, not useful)
+            if header.starts_with("Community Hubs") {
+                in_skip_section = true;
+                continue;
+            }
+
+            // For Communities detail (### Community N - "..."), only keep header + cohesion + first 3 nodes
+            if line.starts_with("### ") && header.starts_with("Community ") {
+                in_communities_detail = true;
+                communities_count += 1;
+                // Only show first 15 communities in detail
+                if communities_count > 15 {
+                    in_skip_section = true;
+                    continue;
+                }
+            }
+
+            out.push(line.to_string());
+            continue;
+        }
+
+        // Skip lines in skipped sections
+        if in_skip_section {
+            continue;
+        }
+
+        // For community details, only keep cohesion and first few nodes
+        if in_communities_detail {
+            if line.contains("Cohesion:") || line.starts_with("Nodes ") {
+                // Truncate node list at 5 entries
+                if let Some(open) = line.find('(') {
+                    if let Some(close) = line.find(')') {
+                        let nodes_str = &line[open + 1..close];
+                        let nodes: Vec<&str> = nodes_str.split(", ").collect();
+                        if nodes.len() > 5 {
+                            let total = nodes.len();
+                            let truncated: Vec<&str> = nodes.into_iter().take(5).collect();
+                            let prefix = &line[..open + 1];
+                            out.push(format!(
+                                "{}{} (+{} more)",
+                                prefix,
+                                truncated.join(", "),
+                                total - 5
+                            ));
+                        } else {
+                            out.push(line.to_string());
+                        }
+                    } else {
+                        out.push(line.to_string());
+                    }
+                } else {
+                    out.push(line.to_string());
+                }
+            }
+            // Skip individual node lines in community sections
+            continue;
+        }
+
+        out.push(line.to_string());
+    }
+
+    if out.len() >= _max_lines {
+        out.truncate(_max_lines);
+        out.push("… (report truncated)".to_string());
+    }
+
+    out.join("\n")
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn resolve_path(workdir: &Path, relative: &str) -> PathBuf {
@@ -380,6 +501,7 @@ mod tests {
         assert!(resolve("edit").is_some());
         assert!(resolve("glob").is_some());
         assert!(resolve("grep").is_some());
+        assert!(resolve("graphify_report").is_some());
         assert!(resolve("writee").is_none());
         assert!(resolve("unknown").is_none());
     }
