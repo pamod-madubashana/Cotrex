@@ -26,20 +26,39 @@ fn snapshot_to_context(snapshot: &WorkspaceSnapshot) -> InferenceContext {
     use cotrex_ai_kernel::WorkspaceStatus as KStatus;
     use cotrex_ai_runtime::WorkspaceStatus;
 
-    let workspace_status = match snapshot.ai.workspace_status {
-        KStatus::Empty => WorkspaceStatus::Unknown,
-        KStatus::Active => WorkspaceStatus::Modified,
-        KStatus::Idle => WorkspaceStatus::Clean,
+    let workspace_status = if snapshot.ai.file_count > 0 {
+        match snapshot.ai.workspace_status {
+            KStatus::Empty => WorkspaceStatus::Unknown,
+            KStatus::Active => WorkspaceStatus::Modified,
+            KStatus::Idle => WorkspaceStatus::Clean,
+        }
+    } else if snapshot.git.tracked_files > 0 {
+        // Fallback to git status when kernel has no observations
+        if snapshot.git.working_tree_dirty {
+            WorkspaceStatus::Modified
+        } else {
+            WorkspaceStatus::Clean
+        }
+    } else {
+        WorkspaceStatus::Unknown
+    };
+
+    // Use kernel file_count, fallback to git tracked_files
+    let file_count = if snapshot.ai.file_count > 0 {
+        snapshot.ai.file_count
+    } else {
+        snapshot.git.tracked_files
     };
 
     let mut ctx = InferenceContext {
         recent_changes: snapshot.ai.recent_changes.clone(),
         workspace_status,
-        file_count: snapshot.ai.file_count,
+        file_count,
         hash: 0,
         git_branch: snapshot.git.branch.clone(),
         git_dirty: snapshot.git.working_tree_dirty,
         git_modified_count: snapshot.git.modified_files.len(),
+        tracked_files: snapshot.git.tracked_files,
     };
     ctx.hash = ctx.compute_hash();
     ctx

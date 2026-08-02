@@ -45,11 +45,10 @@ impl LocalBackend {
         thread::spawn(move || {
             let inf = LOCAL_INFERENCE.get_or_init(|| Mutex::new(LocalInference::new()));
             let mut guard = inf.lock().map_err(|e| format!("lock: {e}"))?;
-            let callback: Arc<Mutex<dyn FnMut(&str) + Send + 'static>> = Arc::new(Mutex::new(
-                move |token: &str| {
+            let callback: Arc<Mutex<dyn FnMut(&str) + Send + 'static>> =
+                Arc::new(Mutex::new(move |token: &str| {
                     let _ = tx.send(token.to_string());
-                },
-            ));
+                }));
             guard.infer_with_system_stream(&system, &prompt, Some(callback))
         })
     }
@@ -365,7 +364,11 @@ mod console {
             }
             h
         });
-        if handle == -1isize { None } else { Some(handle) }
+        if handle == -1isize {
+            None
+        } else {
+            Some(handle)
+        }
     }
 
     /// Write bytes to the console.  Converts UTF-8 to UTF-16 and uses
@@ -416,4 +419,3 @@ mod console {
 }
 
 pub use console::write as console_write;
-

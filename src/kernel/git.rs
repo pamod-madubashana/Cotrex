@@ -86,7 +86,6 @@ fn capture_status(root: &Path) -> (Vec<String>, usize, bool) {
 
     let raw = String::from_utf8_lossy(&output.stdout);
     let mut modified_files = Vec::new();
-    let mut tracked_files = 0usize;
 
     for line in raw.lines() {
         if line.is_empty() {
@@ -95,14 +94,10 @@ fn capture_status(root: &Path) -> (Vec<String>, usize, bool) {
 
         // porcelain format: XY filename
         // X = index status, Y = worktree status
-        // tracked files have a space or modification in either position
         if line.len() >= 3 {
             let bytes = line.as_bytes();
             let x = bytes[0];
             let y = bytes[1];
-
-            // Count tracked files (any line with a filename)
-            tracked_files += 1;
 
             // Modified = non-space in either status position
             if x != b' ' || y != b' ' {
@@ -114,8 +109,26 @@ fn capture_status(root: &Path) -> (Vec<String>, usize, bool) {
         }
     }
 
+    // Count total tracked files using git ls-files
+    let tracked_files = count_tracked_files(root);
+
     let dirty = !modified_files.is_empty();
     (modified_files, tracked_files, dirty)
+}
+
+/// Count total tracked files using `git ls-files`.
+fn count_tracked_files(root: &Path) -> usize {
+    let output = match Command::new("git")
+        .args(["ls-files"])
+        .current_dir(root)
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return 0,
+    };
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    raw.lines().filter(|l| !l.is_empty()).count()
 }
 
 fn capture_context_hash(root: &Path) -> Option<String> {

@@ -160,9 +160,7 @@ pub fn run_setup() -> Result<(), String> {
         let mut opts: Vec<String> = registry
             .models
             .iter()
-            .map(|m| {
-                format!("{} ({})", m.id, format_size_display(m.size))
-            })
+            .map(|m| format!("{} ({})", m.id, format_size_display(m.size)))
             .collect();
         if opts.is_empty() {
             opts.push("qwen3-8b".into());
@@ -177,7 +175,11 @@ pub fn run_setup() -> Result<(), String> {
         load().model
     } else {
         // Extract just the model ID (first token)
-        model_choice.split_whitespace().next().unwrap_or("qwen3-8b").to_string()
+        model_choice
+            .split_whitespace()
+            .next()
+            .unwrap_or("qwen3-8b")
+            .to_string()
     };
 
     let cfg = Config {

@@ -7,7 +7,6 @@
 //! These tests use the real GGUF fixture and validate the entire pipeline,
 //! not just the provider in isolation.
 
-
 use std::sync::Arc;
 
 use cotrex_ai_contract::{

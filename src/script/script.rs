@@ -62,12 +62,7 @@ pub fn run(
 
     // Run the script through rtk (cotrex never executes raw — orchestrate spawns `rtk run -c`).
     // No LLM here: a script is verified by its diff, not by a model insight.
-    let code = orchestrate::run(
-        &Intent::from_command(exec_command(file)),
-        out,
-        err,
-        opts,
-    )?;
+    let code = orchestrate::run(&Intent::from_command(exec_command(file)), out, err, opts)?;
 
     // Verify: show what changed. The agent reads the diff, not the files.
     // Use fixed options, not the caller's: `--ultra-compact` would leak through to `git diff`

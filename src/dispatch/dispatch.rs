@@ -101,9 +101,7 @@ pub fn dispatch_cmd(cmd: Cmd) -> Option<Intent> {
             crate::commands::demo::run();
             exit(0);
         }
-        Cmd::Run { llm: _, command } => {
-            Some(Intent::from_command(command))
-        }
+        Cmd::Run { llm: _, command } => Some(Intent::from_command(command)),
         Cmd::Script { file } => {
             let cfg = config::load();
             let opts = orchestrate::Options {
@@ -158,11 +156,9 @@ pub fn dispatch_cmd(cmd: Cmd) -> Option<Intent> {
                     .ok()
                     .and_then(|cwd| cotrex::kernel::WorkspaceKernel::open(cwd).ok())
                 {
-                    Some(kernel) => {
-                        Arc::new(cotrex::kernel::context_source::KernelContextSource::new(
-                            Arc::new(kernel),
-                        ))
-                    }
+                    Some(kernel) => Arc::new(
+                        cotrex::kernel::context_source::KernelContextSource::new(Arc::new(kernel)),
+                    ),
                     None => Arc::new(NullContextSource),
                 };
 
@@ -519,12 +515,7 @@ pub fn run_assistant(task: &str, mode: agent::prompt::Mode) -> ! {
 /// Shared task fulfilment: let the prompt decide run-vs-answer using the local model.
 fn fulfill(task: &str, mode: agent::prompt::Mode) -> ! {
     let cfg = config::load();
-    match agent::prompt::fulfill(
-        task,
-        mode,
-        &exec_opts(&cfg),
-        agent::prompt::MAX_STEPS,
-    ) {
+    match agent::prompt::fulfill(task, mode, &exec_opts(&cfg), agent::prompt::MAX_STEPS) {
         Ok(code) => exit(code),
         Err(e) => {
             eprintln!("cotrex: {e}");

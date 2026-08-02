@@ -65,21 +65,31 @@ You operate inside the user's current working directory.
 
 Your job:
 - understand the request
-- inspect the local environment when information is required
+- investigate the codebase using graphify tools first, then file tools
 - execute requested developer actions
 - return useful, concise results
-- avoid guessing about files, code, configuration, or project state
 
-Do not create subagents or plans. Do not pretend to be multiple agents.
+RULES:
+1. For ANY question about code, architecture, or the project — use graphify tools FIRST.
+   - Start with {"tool":"graphify_report"} to get the code map overview.
+2. Only read files directly (read/glob/grep) AFTER graphify points you to the right area.
+3. Think step by step. Explain what you're doing with {"say":"..."} before each action.
 
 Every response MUST be exactly one valid JSON object.
 Never output markdown or explanations outside JSON.
 
-Use {"answer":"text"} for direct answers.
-Use {"run":"command","say":"short reason"} for shell commands.
-Use {"tool":"name","args":{},"say":"short reason"} ONLY for these built-in file tools: read, write, edit, glob, grep.
-Never invent tool names — if the action is not a file operation, use {"run":"command"} instead.
-Prefer tools for file operations and shell commands for everything else."#;
+Graphify tools (USE FIRST for codebase questions):
+- {"tool":"graphify_report"} — read the code map overview (god nodes, communities, structure)
+
+File tools (use AFTER graphify):
+- {"tool":"read","args":{"path":"..."}} — read a file
+- {"tool":"glob","args":{"pattern":"..."}} — find files
+- {"tool":"grep","args":{"pattern":"...","path":"..."}} — search contents
+
+Shell (for everything else):
+- {"run":"command","say":"short reason"} — run a shell command
+
+Use {"answer":"text"} ONLY after gathering sufficient information."#;
 
 /// The header (system prompt) bound to a category, if it is known.
 pub fn header(category: &str) -> Option<&'static str> {
@@ -418,35 +428,69 @@ impl AgentProfile {
         eprintln!("  ┌─ Agent Profile ─────────────────────────────┐");
         for step in &self.steps {
             match step {
-                StepProfile::Inference { label, duration, profile } => {
-                    eprintln!("  │ {:<20} {:>7.1} ms", label, duration.as_secs_f64() * 1000.0);
+                StepProfile::Inference {
+                    label,
+                    duration,
+                    profile,
+                } => {
+                    eprintln!(
+                        "  │ {:<20} {:>7.1} ms",
+                        label,
+                        duration.as_secs_f64() * 1000.0
+                    );
                     if let Some(p) = profile {
-                        eprintln!("  │   ├─ chat_template  {:>5.1} ms",
-                            p.chat_template.as_secs_f64() * 1000.0);
-                        eprintln!("  │   ├─ tokenize       {:>5.1} ms",
-                            p.tokenize.as_secs_f64() * 1000.0);
-                        eprintln!("  │   ├─ new_context    {:>5.1} ms",
-                            p.new_context.as_secs_f64() * 1000.0);
-                        eprintln!("  │   ├─ prompt_decode  {:>5.1} ms ({} tok, {:.0} tok/s)",
+                        eprintln!(
+                            "  │   ├─ chat_template  {:>5.1} ms",
+                            p.chat_template.as_secs_f64() * 1000.0
+                        );
+                        eprintln!(
+                            "  │   ├─ tokenize       {:>5.1} ms",
+                            p.tokenize.as_secs_f64() * 1000.0
+                        );
+                        eprintln!(
+                            "  │   ├─ new_context    {:>5.1} ms",
+                            p.new_context.as_secs_f64() * 1000.0
+                        );
+                        eprintln!(
+                            "  │   ├─ prompt_decode  {:>5.1} ms ({} tok, {:.0} tok/s)",
                             p.prompt_decode.as_secs_f64() * 1000.0,
                             p.prompt_tokens,
-                            p.prompt_tok_s());
-                        eprintln!("  │   └─ generation    {:>5.1} ms ({} tok, {:.1} tok/s)",
+                            p.prompt_tok_s()
+                        );
+                        eprintln!(
+                            "  │   └─ generation    {:>5.1} ms ({} tok, {:.1} tok/s)",
                             p.generation.as_secs_f64() * 1000.0,
                             p.generated_tokens,
-                            p.gen_tok_s());
+                            p.gen_tok_s()
+                        );
                     }
                 }
                 StepProfile::Tool { name, duration } => {
-                    eprintln!("  │ {:<20} {:>7.1} ms", format!("tool:{}", name), duration.as_secs_f64() * 1000.0);
+                    eprintln!(
+                        "  │ {:<20} {:>7.1} ms",
+                        format!("tool:{}", name),
+                        duration.as_secs_f64() * 1000.0
+                    );
                 }
                 StepProfile::Shell { cmd, duration } => {
-                    let short = if cmd.len() > 25 { format!("{}…", &cmd[..24]) } else { cmd.clone() };
-                    eprintln!("  │ {:<20} {:>7.1} ms", format!("sh:{}", short), duration.as_secs_f64() * 1000.0);
+                    let short = if cmd.len() > 25 {
+                        format!("{}…", &cmd[..24])
+                    } else {
+                        cmd.clone()
+                    };
+                    eprintln!(
+                        "  │ {:<20} {:>7.1} ms",
+                        format!("sh:{}", short),
+                        duration.as_secs_f64() * 1000.0
+                    );
                 }
             }
         }
-        eprintln!("  │ {:<20} {:>7.1} ms", "TOTAL", self.total.as_secs_f64() * 1000.0);
+        eprintln!(
+            "  │ {:<20} {:>7.1} ms",
+            "TOTAL",
+            self.total.as_secs_f64() * 1000.0
+        );
         eprintln!("  └────────────────────────────────────────────┘");
     }
 }
@@ -455,12 +499,7 @@ impl AgentProfile {
 /// `max_steps` limits how many command iterations the agent can run
 /// before forced to answer. Returns the exit code (0 for an answered task). Prints the real command
 /// output, or the answer, to stdout.
-pub fn fulfill(
-    task: &str,
-    mode: Mode,
-    opts: &Options,
-    max_steps: usize,
-) -> Result<i32, String> {
+pub fn fulfill(task: &str, mode: Mode, opts: &Options, max_steps: usize) -> Result<i32, String> {
     let task = prepare_task(task);
     let task = &task;
     // Generate for the shell we actually run on (see `exec_capture`): PowerShell on Windows, POSIX
@@ -478,13 +517,22 @@ git); never PowerShell or cmd syntax."
     // Step loop: the model runs commands to gather info (each output fed back, capped), then
     // finishes with an ANALYZED answer — never a raw command dump. A failure is fed back to fix.
     let mut transcript_events: Vec<TranscriptEvent> = Vec::new();
-    let mut agent_profile = if agent_profiling() { Some(AgentProfile::default()) } else { None };
+    let mut agent_profile = if agent_profiling() {
+        Some(AgentProfile::default())
+    } else {
+        None
+    };
     let agent_start = Instant::now();
     let mut seen: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new(); // (cmd, error) pairs
     let perms = crate::agent::permission::Permissions::default();
     let limiter = OutputLimiter { max_lines: 500 };
-    let render = if mode == Mode::User { RenderMode::Stream } else { RenderMode::FinalOnly };
+    let render = if mode == Mode::User {
+        RenderMode::Stream
+    } else {
+        RenderMode::FinalOnly
+    };
+    let mut code_changed = false;
     for step in 0..max_steps {
         let transcript = render_transcript(&transcript_events);
         let user = if transcript.is_empty() {
@@ -593,7 +641,10 @@ git); never PowerShell or cmd syntax."
                 let result = (tool.execute)(&ctx, &args);
                 let tool_elapsed = t_tool.elapsed();
                 if let Some(ref mut ap) = agent_profile {
-                    ap.steps.push(StepProfile::Tool { name: tool.name, duration: tool_elapsed });
+                    ap.steps.push(StepProfile::Tool {
+                        name: tool.name,
+                        duration: tool_elapsed,
+                    });
                 }
                 match result {
                     Ok(output) => {
@@ -642,18 +693,28 @@ git); never PowerShell or cmd syntax."
                 let (code, out) = exec_capture(&cmd, opts, mode)?;
                 let shell_elapsed = t_shell.elapsed();
                 if let Some(ref mut ap) = agent_profile {
-                    ap.steps.push(StepProfile::Shell { cmd: cmd.clone(), duration: shell_elapsed });
+                    ap.steps.push(StepProfile::Shell {
+                        cmd: cmd.clone(),
+                        duration: shell_elapsed,
+                    });
                 }
                 if code != 0 {
                     failed.push((cmd.clone(), format!("exit {code}: {}", trunc(&out, 200))));
                 }
                 transcript_events.push(TranscriptEvent::Shell {
-                    cmd,
+                    cmd: cmd.clone(),
                     exit_code: code,
                     output: limiter.truncate(&trunc(&out, 1500)),
                 });
+                if code == 0 && crate::graphify::touches_code(&cmd) {
+                    code_changed = true;
+                }
             }
         }
+    }
+    // Update graphify graph if any code-changing commands ran during the loop.
+    if code_changed {
+        crate::graphify::auto_update("agent-loop");
     }
     // Out of steps: force a final answer from what we've gathered.
     let transcript = render_transcript(&transcript_events);
@@ -683,11 +744,7 @@ git); never PowerShell or cmd syntax."
 
 /// Like `fulfill()` but returns the answer text instead of printing it. Used by MCP tools where
 /// the result needs to go back as tool content, not to stdout/stderr.
-pub fn fulfill_and_capture(
-    task: &str,
-    opts: &Options,
-    max_steps: usize,
-) -> Result<String, String> {
+pub fn fulfill_and_capture(task: &str, opts: &Options, max_steps: usize) -> Result<String, String> {
     let shell = if cfg!(windows) {
         "Any command runs in Windows PowerShell — use PowerShell cmdlets and syntax (Get-ChildItem, \
         Select-String, Measure-Object, Select-Object, Where-Object). Do NOT use bash/POSIX tools (no sed, \
@@ -699,12 +756,17 @@ pub fn fulfill_and_capture(
     let system = build_system_prompt(shell);
 
     let mut transcript_events: Vec<TranscriptEvent> = Vec::new();
-    let mut agent_profile = if agent_profiling() { Some(AgentProfile::default()) } else { None };
+    let mut agent_profile = if agent_profiling() {
+        Some(AgentProfile::default())
+    } else {
+        None
+    };
     let agent_start = Instant::now();
     let mut seen: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
     let _perms = crate::agent::permission::Permissions::default();
     let limiter = OutputLimiter { max_lines: 500 };
+    let mut code_changed = false;
     for step in 0..max_steps {
         let transcript = render_transcript(&transcript_events);
         let user = if transcript.is_empty() {
@@ -717,7 +779,8 @@ pub fn fulfill_and_capture(
             };
             format!("Request: {task}\n\nCommands run so far:\n{transcript}{fix_hint}\nGather more if needed, else answer.")
         };
-        let (decision_text, infer_profile) = one_call(&system, &user, Mode::Model, RenderMode::FinalOnly)?;
+        let (decision_text, infer_profile) =
+            one_call(&system, &user, Mode::Model, RenderMode::FinalOnly)?;
         if let Some(ref mut ap) = agent_profile {
             ap.steps.push(StepProfile::Inference {
                 label: format!("step-{} infer", step),
@@ -775,7 +838,10 @@ pub fn fulfill_and_capture(
                 let result = (tool.execute)(&ctx, &args);
                 let tool_elapsed = t_tool.elapsed();
                 if let Some(ref mut ap) = agent_profile {
-                    ap.steps.push(StepProfile::Tool { name: tool.name, duration: tool_elapsed });
+                    ap.steps.push(StepProfile::Tool {
+                        name: tool.name,
+                        duration: tool_elapsed,
+                    });
                 }
                 match result {
                     Ok(output) => {
@@ -812,25 +878,36 @@ pub fn fulfill_and_capture(
                 let (code, out) = exec_capture(&cmd, opts, Mode::Model)?;
                 let shell_elapsed = t_shell.elapsed();
                 if let Some(ref mut ap) = agent_profile {
-                    ap.steps.push(StepProfile::Shell { cmd: cmd.clone(), duration: shell_elapsed });
+                    ap.steps.push(StepProfile::Shell {
+                        cmd: cmd.clone(),
+                        duration: shell_elapsed,
+                    });
                 }
                 if code != 0 {
                     failed.push((cmd.clone(), format!("exit {code}: {}", trunc(&out, 200))));
                 }
                 transcript_events.push(TranscriptEvent::Shell {
-                    cmd,
+                    cmd: cmd.clone(),
                     exit_code: code,
                     output: limiter.truncate(&trunc(&out, 1500)),
                 });
+                if code == 0 && crate::graphify::touches_code(&cmd) {
+                    code_changed = true;
+                }
             }
         }
+    }
+    // Update graphify graph if any code-changing commands ran during the loop.
+    if code_changed {
+        crate::graphify::auto_update("agent-loop");
     }
     // Out of steps: force a final answer.
     let transcript = render_transcript(&transcript_events);
     let user = format!(
         "Request: {task}\n\nCommands run so far:\n{transcript}\nGive your final answer now as {{\"answer\":\"...\"}}."
     );
-    let (decision_text, infer_profile) = one_call(&system, &user, Mode::Model, RenderMode::FinalOnly)?;
+    let (decision_text, infer_profile) =
+        one_call(&system, &user, Mode::Model, RenderMode::FinalOnly)?;
     if let Some(ref mut ap) = agent_profile {
         ap.steps.push(StepProfile::Inference {
             label: "forced-answer".into(),
@@ -1389,18 +1466,18 @@ fn extract_answer_value(buf: &str) -> Option<String> {
     let mut chars = value_part.chars();
     while let Some(ch) = chars.next() {
         match ch {
-            '"' => break,          // closing quote — value complete
+            '"' => break, // closing quote — value complete
             '\\' => {
                 // Unescape the next character.
                 if let Some(esc) = chars.next() {
                     result.push(match esc {
-                        'n'  => '\n',
-                        't'  => '\t',
-                        'r'  => '\r',
-                        '"'  => '"',
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        '"' => '"',
                         '\\' => '\\',
-                        '/'  => '/',
-                        other => other,   // best-effort for \uXXXX etc.
+                        '/' => '/',
+                        other => other, // best-effort for \uXXXX etc.
                     });
                 }
             }
@@ -1440,7 +1517,11 @@ impl Spinner {
             while !flag.load(Ordering::Relaxed) {
                 let start = std::time::Instant::now();
                 crate::llm::console_write(
-                    format!("\r{SAY_COLOR}{}\x1b[0m {label}...", SPIN_FRAMES[i % SPIN_FRAMES.len()]).as_bytes(),
+                    format!(
+                        "\r{SAY_COLOR}{}\x1b[0m {label}...",
+                        SPIN_FRAMES[i % SPIN_FRAMES.len()]
+                    )
+                    .as_bytes(),
                 );
                 i += 1;
 
